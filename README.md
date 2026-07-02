@@ -4,7 +4,7 @@ A local MCP server for **Jira and Confluence Cloud attachments** — the file op
 
 The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no access to your filesystem, so it cannot upload, download, or otherwise touch attachments. This server runs locally via `npx`, complements the official MCP in the same client config, and does exactly one job: move files between your disk and Jira issues / Confluence pages.
 
-> **Status: early development.** The foundation (auth, HTTP client, download sandbox) is built; attachment tools are landing next.
+> **Status: working prototype.** All eight tools are implemented with test coverage; expect rough edges until 1.0.
 
 ## Setup
 
@@ -41,14 +41,16 @@ One server instance serves one Atlassian site. Multiple sites? Configure the ser
 
 | Tool | Products | Notes |
 |---|---|---|
-| `get_attachment_limits` | Jira | Attachment enabled/max-size settings |
-| `list_attachments` | Jira + Confluence | *(planned)* |
-| `upload_attachment` | Jira + Confluence | *(planned)* reads any local path |
-| `download_attachment` | Jira + Confluence | *(planned)* writes into the sandbox |
-| `download_all_attachments` | Jira + Confluence | *(planned)* bulk, per issue/page |
-| `delete_attachment` | Jira + Confluence | *(planned)* |
-| `peek_archive_attachment` | Jira | *(planned)* list zip contents without downloading |
-| `get_attachment_thumbnail` | Jira | *(planned)* returns the image inline for vision models |
+| `list_attachments` | Jira + Confluence | id, filename, size, MIME type, author |
+| `upload_attachment` | Jira + Confluence | reads any local path |
+| `download_attachment` | Jira + Confluence | writes into the sandbox, returns path + metadata |
+| `download_all_attachments` | Jira + Confluence | bulk, per issue/page; per-file results |
+| `delete_attachment` | Jira + Confluence | permanent |
+| `peek_archive_attachment` | Jira | list zip contents without downloading |
+| `get_attachment_thumbnail` | Jira | returns the image inline for vision models |
+| `get_attachment_limits` | Jira | attachment enabled/max-size settings |
+
+`ATTACHMENT_MCP_MAX_DOWNLOAD_MB` (optional) caps download size; default 512.
 
 ## Security model
 
