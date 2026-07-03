@@ -8,14 +8,31 @@ The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no ac
 
 ## Setup
 
-Create an [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens), then add the server to your MCP client:
+Not on npm yet — clone and build it (needs Node ≥ 20):
+
+```bash
+git clone https://github.com/iotashan/atlassian-attachments-mcp
+cd atlassian-attachments-mcp && npm install && npm run build
+```
+
+Create an [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens), then register the server with the Claude Code CLI:
+
+```bash
+claude mcp add atlassian-attachments \
+  -e ATLASSIAN_SITE_URL=https://your-site.atlassian.net \
+  -e ATLASSIAN_EMAIL=you@example.com \
+  -e ATLASSIAN_API_TOKEN=your-api-token \
+  -- node "$PWD/dist/index.js"
+```
+
+Or add it to any MCP client's config directly:
 
 ```json
 {
   "mcpServers": {
     "atlassian-attachments": {
-      "command": "npx",
-      "args": ["-y", "atlassian-attachments-mcp"],
+      "command": "node",
+      "args": ["/absolute/path/to/atlassian-attachments-mcp/dist/index.js"],
       "env": {
         "ATLASSIAN_SITE_URL": "https://your-site.atlassian.net",
         "ATLASSIAN_EMAIL": "you@example.com",
@@ -26,7 +43,7 @@ Create an [Atlassian API token](https://id.atlassian.com/manage-profile/security
 }
 ```
 
-One server instance serves one Atlassian site. Multiple sites? Configure the server multiple times under different names.
+One server instance serves one Atlassian site. Multiple sites? Register the server multiple times under different names.
 
 ### Environment variables
 
