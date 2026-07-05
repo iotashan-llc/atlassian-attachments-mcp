@@ -6,6 +6,13 @@ import { maxDownloadBytes, streamToFile } from "./download.js";
 import { FileExistsError } from "./errors.js";
 import type { AttachmentInfo, JiraAttachments } from "./jira.js";
 import { toAttachmentInfo, type ConfluenceAttachments } from "./confluence.js";
+import {
+  confluenceImageFragment,
+  confluenceLinkFragment,
+  jiraFileCardNode,
+  jiraInlineNode,
+  jiraMediaNode,
+} from "./embed.js";
 import type { Sandbox } from "./sandbox.js";
 
 const pkg = createRequire(import.meta.url)("../package.json") as {
@@ -33,12 +40,22 @@ const overwrite = z
   .optional()
   .describe("Replace an existing local file (default false)");
 
+const INSTRUCTIONS = `This server manages Atlassian ATTACHMENTS (binaries) on Jira issues and Confluence pages. It complements the first-party Atlassian MCP: that one does issue/page text CRUD but CANNOT read attachment binaries or render a displayed image — this one can.
+
+Recommended workflow when opening a ticket or page:
+- Fetch the issue/page CONTENT with the first-party Atlassian MCP AND the attachment list (list_attachments) or downloads (download_all_attachments) with THIS server in the SAME batch. The calls are independent — issue them together to save a round-trip. Screenshots attached to a ticket usually carry the real repro / acceptance detail, so pull them by default.
+- Downloads are written to a local sandbox and the path is returned (content is NOT inlined) — Read the saved path to view an image.
+- To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.`;
+
 export function createServer(context: ServerContext): McpServer {
   const { jira, confluence, sandbox, siteHost } = context;
-  const server = new McpServer({
-    name: "atlassian-attachments-mcp",
-    version: pkg.version,
-  });
+  const server = new McpServer(
+    {
+      name: "atlassian-attachments-mcp",
+      version: pkg.version,
+    },
+    { instructions: INSTRUCTIONS },
+  );
 
   /**
    * Order matters: reserve the sandbox path BEFORE opening the network
@@ -69,7 +86,8 @@ export function createServer(context: ServerContext): McpServer {
     {
       title: "List attachments",
       description:
-        "List the attachments on a Jira issue or Confluence page: id, filename, size, MIME type, author.",
+        "List the attachments on a Jira issue or Confluence page: id, filename, size, MIME type, author. " +
+        "Tip: when opening a ticket/page, call this in the same batch as the first-party Atlassian MCP's issue/page fetch — the calls are independent, so run them in parallel.",
       inputSchema: { product, container },
     },
     (args) =>
@@ -157,7 +175,8 @@ export function createServer(context: ServerContext): McpServer {
     {
       title: "Download all attachments",
       description:
-        "Download every attachment on a Jira issue or Confluence page into the local sandbox. Returns per-file results; existing files are skipped unless overwrite is set.",
+        "Download every attachment on a Jira issue or Confluence page into the local sandbox. Returns per-file results; existing files are skipped unless overwrite is set. " +
+        "Tip: run this alongside the first-party Atlassian MCP's issue/page fetch (same batch) so you get the text and the screenshots in one round-trip; then Read each saved path.",
       inputSchema: { product, container, overwrite },
     },
     (args) =>
@@ -263,6 +282,136 @@ export function createServer(context: ServerContext): McpServer {
       inputSchema: {},
     },
     () => run(async () => JSON.stringify(await jira.limits())),
+  );
+
+  server.registerTool(
+    "embed_attachment",
+    {
+      title: "Embed or link an attachment",
+      description:
+        "Insert an already-uploaded attachment into a Jira issue (description or a new comment) or a Confluence page (body or a new footer comment). " +
+        'as="image" (default) = a displayed image; as="link" = a clickable download link / file card (any file type, e.g. PDF/zip); as="inline" = an inline file chip within a line (Jira only, any file type). ' +
+        "This is the way to show an image or reference a file — the first-party Atlassian MCP's page/description update cannot do either. " +
+        "Upload the file first with upload_attachment on the same container, then call this. " +
+        "Identify the attachment by attachmentId (preferred) or exact filename. " +
+        'target="body" = Jira description / Confluence page body; target="comment" = a new comment. ' +
+        "Jira uses the newest v3/ADF (image=mediaSingle, link=mediaGroup, inline=mediaInline); Confluence uses v2 storage (image=ac:image, link=ac:link; inline is not supported). Re-running appends another copy (no dedupe).",
+      inputSchema: {
+        product,
+        container,
+        target: z
+          .enum(["body", "comment"])
+          .describe(
+            'Where to embed: "body" = Jira description / Confluence page body; "comment" = a new comment on the issue/page',
+          ),
+        attachmentId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Attachment id (preferred identifier)"),
+        filename: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Exact attachment filename (alternative to attachmentId)"),
+        as: z
+          .enum(["image", "link", "inline"])
+          .optional()
+          .describe(
+            'Render as a displayed "image" (default), a download "link" / file card, or an "inline" file chip within a line (Jira only; any file type)',
+          ),
+        width: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe('Display width in px (image mode only, optional)'),
+        alt: z.string().optional().describe("Alt text (image mode only, optional)"),
+        linkText: z
+          .string()
+          .optional()
+          .describe('Link label (link mode; defaults to the filename)'),
+        commentText: z
+          .string()
+          .optional()
+          .describe('For target="comment": text to place above the image/link'),
+        position: z
+          .enum(["append", "prepend"])
+          .optional()
+          .describe('For target="body": add at end (default) or start'),
+      },
+    },
+    (args) =>
+      run(async () => {
+        if (!args.attachmentId && !args.filename) {
+          throw new Error(
+            "Provide attachmentId or filename to identify the image to embed",
+          );
+        }
+        const position = args.position ?? "append";
+        const mode = args.as ?? "image";
+        let result: Record<string, unknown>;
+
+        if (args.product === "confluence") {
+          if (mode === "inline") {
+            throw new Error(
+              'as:"inline" is Jira-only — Confluence storage has no inline file chip. Use as:"link" (renders an inline download link) or as:"image".',
+            );
+          }
+          // attachmentId is authoritative when supplied (consistent with Jira).
+          const filename = args.attachmentId
+            ? await confluence.filenameById(args.attachmentId)
+            : args.filename!;
+          const fragment =
+            mode === "link"
+              ? confluenceLinkFragment(filename, args.linkText)
+              : confluenceImageFragment(filename, {
+                  width: args.width,
+                  alt: args.alt,
+                });
+          const embedded =
+            args.target === "comment"
+              ? await confluence.embedInComment(
+                  args.container,
+                  fragment,
+                  args.commentText,
+                )
+              : await confluence.embedInBody(args.container, fragment, position);
+          result = {
+            product: "confluence",
+            target: args.target,
+            as: mode,
+            container: args.container,
+            filename,
+            ...embedded,
+          };
+        } else {
+          const uuid = args.attachmentId
+            ? await jira.mediaUuid(args.attachmentId)
+            : await jira.mediaUuid(
+                await jira.idByFilename(args.container, args.filename!),
+              );
+          const node =
+            mode === "link"
+              ? jiraFileCardNode(uuid)
+              : mode === "inline"
+                ? jiraInlineNode(uuid)
+                : jiraMediaNode(uuid, { width: args.width, alt: args.alt });
+          const embedded =
+            args.target === "comment"
+              ? await jira.embedInComment(args.container, node, args.commentText)
+              : await jira.embedInDescription(args.container, node, position);
+          result = {
+            product: "jira",
+            target: args.target,
+            as: mode,
+            container: args.container,
+            mediaUuid: uuid,
+            ...embedded,
+          };
+        }
+        return JSON.stringify(result, null, 2);
+      }),
   );
 
   return server;

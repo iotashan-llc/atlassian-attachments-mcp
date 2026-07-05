@@ -2,6 +2,8 @@ import path from "node:path";
 import { openAsBlob } from "node:fs";
 import type { AtlassianClient } from "./http.js";
 import type { AttachmentInfo } from "./jira.js";
+import { AtlassianApiError } from "./errors.js";
+import { insertIntoStorage, xmlEscapeText, type Position } from "./embed.js";
 
 /**
  * Confluence Cloud straddles two API generations: list/get/delete live on
@@ -101,6 +103,81 @@ export class ConfluenceAttachments {
       `/wiki/api/v2/attachments/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
+  }
+
+  /** Confluence embeds reference an attachment by filename; resolve it from an id. */
+  async filenameById(attachmentId: string): Promise<string> {
+    return (await this.metadata(attachmentId)).title;
+  }
+
+  /**
+   * Insert a prebuilt storage fragment (image or link) into the page body
+   * (v2 storage). Reads the current storage body + version and writes it back
+   * with version+1. v1 /wiki/rest/api/content is deprecated — v2 is the target.
+   */
+  async embedInBody(
+    pageId: string,
+    fragment: string,
+    position: Position,
+  ): Promise<{ version: number }> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const page = await this.client.json<{
+          id: string;
+          status: string;
+          title: string;
+          version: { number: number };
+          body: { storage: { value: string } };
+        }>(`/wiki/api/v2/pages/${encodeURIComponent(pageId)}?body-format=storage`);
+        const value = insertIntoStorage(
+          page.body.storage.value ?? "",
+          fragment,
+          position,
+        );
+        const number = page.version.number + 1;
+        await this.client.json<void>(
+          `/wiki/api/v2/pages/${encodeURIComponent(pageId)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: pageId,
+              status: page.status,
+              title: page.title,
+              body: { representation: "storage", value },
+              version: { number, message: "Embed attachment" },
+            }),
+          },
+        );
+        return { version: number };
+      } catch (err) {
+        if (attempt === 0 && err instanceof AtlassianApiError && err.status === 409)
+          continue;
+        throw err;
+      }
+    }
+  }
+
+  /** Add a footer comment (v2) containing a prebuilt fragment and optional text. */
+  async embedInComment(
+    pageId: string,
+    fragment: string,
+    text?: string,
+  ): Promise<{ commentId: string }> {
+    const textHtml = text ? `<p>${xmlEscapeText(text)}</p>` : "";
+    const value = textHtml + fragment;
+    const res = await this.client.json<{ id: string }>(
+      "/wiki/api/v2/footer-comments",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pageId,
+          body: { representation: "storage", value },
+        }),
+      },
+    );
+    return { commentId: res.id };
   }
 }
 

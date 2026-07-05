@@ -29,6 +29,34 @@ export class AtlassianClient {
   }
 
   /**
+   * Authenticated request that does NOT follow redirects; returns the Location
+   * header. Used to resolve a Jira attachment's media-services UUID from the
+   * content endpoint's 302 to api.media.atlassian.com — the UUID an ADF media
+   * node needs but the upload/list responses never expose.
+   */
+  async redirectLocation(path: string): Promise<string> {
+    const res = await fetch(this.#url(path), {
+      headers: { Authorization: this.#auth },
+      redirect: "manual",
+    });
+    if (res.status < 300 || res.status >= 400) {
+      if (!res.ok) throw await this.#toError(res);
+      throw new AtlassianApiError(
+        res.status,
+        `Expected a redirect for ${path}, got status ${res.status}`,
+      );
+    }
+    const location = res.headers.get("location");
+    if (!location) {
+      throw new AtlassianApiError(
+        res.status,
+        `Redirect for ${path} had no Location header`,
+      );
+    }
+    return location;
+  }
+
+  /**
    * Binary GET for attachment bodies. Follows the content redirect to
    * Atlassian's media host (fetch strips Authorization on cross-origin
    * redirects, which is what the signed media URL expects).

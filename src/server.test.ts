@@ -68,12 +68,13 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("exposes all eight tools", async () => {
+  it("exposes all nine tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "delete_attachment",
       "download_all_attachments",
       "download_attachment",
+      "embed_attachment",
       "get_attachment_limits",
       "get_attachment_thumbnail",
       "list_attachments",
