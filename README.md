@@ -4,7 +4,7 @@ A local MCP server for **Jira and Confluence Cloud attachments** — the file op
 
 The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no access to your filesystem, so it cannot upload, download, or otherwise touch attachments. This server runs locally via `npx`, complements the official MCP in the same client config, and does exactly one job: move files between your disk and Jira issues / Confluence pages.
 
-> **Status: working prototype.** All nine tools are implemented with test coverage; expect rough edges until 1.0.
+> All nine tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
 
 ## Setup
 

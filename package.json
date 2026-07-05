@@ -1,9 +1,6 @@
 {
   "name": "atlassian-attachments-mcp",
-  "version": "1.0.0-beta.1",
-  "publishConfig": {
-    "tag": "beta"
-  },
+  "version": "1.0.0",
   "description": "Local MCP server for Jira & Confluence Cloud attachments — the file operations the official Atlassian MCP can't do",
   "license": "MIT",
   "author": "iotashan",
