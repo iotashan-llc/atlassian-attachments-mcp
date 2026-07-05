@@ -24,13 +24,27 @@ const JIRA_BEAN = {
   author: { displayName: "Someone" },
 };
 
+const MEDIA_UUID = "12345678-1234-1234-1234-1234567890ab";
+
+/** 302 like the Jira content endpoint gives, carrying the media-services UUID. */
+function mediaRedirect(): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `https://api.media.atlassian.com/file/${MEDIA_UUID}/binary`,
+    },
+  });
+}
+
 /** Route mocked fetch by URL substring. */
-function routeFetch(routes: Array<[string, () => Response]>): void {
+function routeFetch(
+  routes: Array<[string, (url: string, init?: RequestInit) => Response]>,
+): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => {
+    vi.fn(async (url: string, init?: RequestInit) => {
       for (const [needle, make] of routes) {
-        if (url.includes(needle)) return make();
+        if (url.includes(needle)) return make(url, init);
       }
       return new Response("no route: " + url, { status: 404 });
     }),
@@ -280,5 +294,116 @@ describe("MCP server end-to-end (in-memory transport)", () => {
       arguments: { product: "jira", container: "NOPE-1" },
     });
     expect(result.isError).toBe(true);
+  });
+
+  it("embeds a Jira image into the description (resolves media UUID, PUTs ADF)", async () => {
+    let put: { fields: { description: { content: unknown[] } } } | undefined;
+    routeFetch([
+      ["/rest/api/3/attachment/content/10001", mediaRedirect],
+      [
+        "/rest/api/3/issue/PROJ-1",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            put = JSON.parse(init.body as string);
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({ fields: { description: null } });
+        },
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachment",
+      arguments: {
+        product: "jira",
+        container: "PROJ-1",
+        target: "body",
+        attachmentId: "10001",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ as: "image", mediaUuid: MEDIA_UUID, issueKey: "PROJ-1" });
+    const media = put!.fields.description.content[0] as {
+      type: string;
+      content: Array<{ attrs: { id: string } }>;
+    };
+    expect(media.type).toBe("mediaSingle");
+    expect(media.content[0].attrs.id).toBe(MEDIA_UUID);
+  });
+
+  it("embeds a Jira file card into a new comment, identified by filename", async () => {
+    routeFetch([
+      // Order matters: the comment path also contains "/rest/api/3/issue/PROJ-1".
+      ["/rest/api/3/issue/PROJ-1/comment", () => Response.json({ id: "c1" })],
+      ["/rest/api/3/attachment/content/10001", mediaRedirect],
+      [
+        "/rest/api/3/issue/PROJ-1",
+        () => Response.json({ fields: { attachment: [JIRA_BEAN] } }),
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachment",
+      arguments: {
+        product: "jira",
+        container: "PROJ-1",
+        target: "comment",
+        as: "link",
+        filename: "report.pdf",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ as: "link", commentId: "c1", mediaUuid: MEDIA_UUID });
+  });
+
+  it("embeds a Confluence image into the page body (read-modify-write, version+1)", async () => {
+    let putValue = "";
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9000",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            putValue = JSON.parse(init.body as string).body.value;
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({
+            id: "9000",
+            status: "current",
+            title: "My Page",
+            version: { number: 3 },
+            body: { storage: { value: "<p>existing</p>" } },
+          });
+        },
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachment",
+      arguments: {
+        product: "confluence",
+        container: "9000",
+        target: "body",
+        filename: "diagram.png",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ as: "image", version: 4, filename: "diagram.png" });
+    expect(putValue).toContain("<p>existing</p>");
+    expect(putValue).toContain('<ri:attachment ri:filename="diagram.png"');
+  });
+
+  it("rejects as:inline on Confluence with a helpful error", async () => {
+    const result = await client.callTool({
+      name: "embed_attachment",
+      arguments: {
+        product: "confluence",
+        container: "9000",
+        target: "body",
+        as: "inline",
+        filename: "diagram.png",
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content as Array<{ text: string }>)[0].text).toMatch(/Jira-only/);
   });
 });

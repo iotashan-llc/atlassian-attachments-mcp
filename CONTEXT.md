@@ -28,6 +28,14 @@ _Avoid_: preview, icon
 Downloading every Attachment on one Container into a local directory.
 _Avoid_: export, sync, mirror
 
+**Embed**:
+Inserting an already-uploaded Attachment into a Container's body or comment so it displays (image), links (file card), or shows as an inline chip. Distinct from upload, which only stores the file.
+_Avoid_: attach, insert, paste
+
+**Media UUID**:
+The media-services file identifier a Jira ADF media node needs to render an Attachment. Absent from the upload/list responses; resolved from the Attachment content endpoint's redirect. (Confluence Embeds reference by filename and need no UUID.)
+_Avoid_: media id, file id, attachment id
+
 **Sandbox Root**:
 The single local directory downloads are confined to; the server never writes outside it.
 _Avoid_: workspace, output dir, cache
