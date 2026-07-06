@@ -158,6 +158,45 @@ export class ConfluenceAttachments {
     }
   }
 
+  /**
+   * Replace the whole page body with caller-authored v2 storage XML (version+1).
+   * The way to place images inline anywhere — reference an uploaded attachment
+   * with <ac:image><ri:attachment ri:filename="..."/></ac:image>. Overwrites
+   * existing content, so the caller must supply the complete body.
+   */
+  async setBody(pageId: string, value: string): Promise<{ version: number }> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const page = await this.client.json<{
+          id: string;
+          status: string;
+          title: string;
+          version: { number: number };
+        }>(`/wiki/api/v2/pages/${encodeURIComponent(pageId)}?body-format=storage`);
+        const number = page.version.number + 1;
+        await this.client.json<void>(
+          `/wiki/api/v2/pages/${encodeURIComponent(pageId)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: pageId,
+              status: page.status,
+              title: page.title,
+              body: { representation: "storage", value },
+              version: { number, message: "Set body" },
+            }),
+          },
+        );
+        return { version: number };
+      } catch (err) {
+        if (attempt === 0 && err instanceof AtlassianApiError && err.status === 409)
+          continue;
+        throw err;
+      }
+    }
+  }
+
   /** Add a footer comment (v2) containing a prebuilt fragment and optional text. */
   async embedInComment(
     pageId: string,

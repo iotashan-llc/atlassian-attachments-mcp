@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseMediaUuid,
+  isMediaUuid,
   xmlEscapeAttr,
   xmlEscapeText,
   confluenceImageFragment,
@@ -11,6 +12,8 @@ import {
   jiraInlineNode,
   appendToAdfDoc,
   jiraCommentDoc,
+  collectMediaNodes,
+  parseAdfDoc,
   type AdfNode,
 } from "./embed.js";
 
@@ -126,6 +129,49 @@ describe("appendToAdfDoc", () => {
     expect(prepended.content?.[0]).toBe(node);
     // input untouched
     expect(existing.content).toHaveLength(1);
+  });
+});
+
+describe("isMediaUuid", () => {
+  it("accepts a bare UUID and rejects filenames / ids", () => {
+    expect(isMediaUuid("d40d93f0-d8d3-4699-a0d4-5b13bf9005f8")).toBe(true);
+    expect(isMediaUuid("diagram.png")).toBe(false);
+    expect(isMediaUuid("10001")).toBe(false);
+  });
+});
+
+describe("collectMediaNodes", () => {
+  it("finds media and mediaInline nodes at any depth", () => {
+    const doc: AdfNode = {
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "hi" }] },
+        jiraMediaNode("a.png"),
+        {
+          type: "paragraph",
+          content: [{ type: "mediaInline", attrs: { id: "b.pdf" } }],
+        },
+      ],
+    };
+    const ids = collectMediaNodes(doc).map((n) => n.attrs?.id);
+    expect(ids).toEqual(["a.png", "b.pdf"]);
+  });
+});
+
+describe("parseAdfDoc", () => {
+  it("parses a valid doc", () => {
+    expect(parseAdfDoc('{"type":"doc","version":1,"content":[]}')).toEqual({
+      type: "doc",
+      version: 1,
+      content: [],
+    });
+  });
+  it("rejects invalid JSON", () => {
+    expect(() => parseAdfDoc("{not json")).toThrow(/JSON ADF document/);
+  });
+  it("rejects a non-doc object", () => {
+    expect(() => parseAdfDoc('{"type":"paragraph"}')).toThrow(/type "doc"/);
   });
 });
 

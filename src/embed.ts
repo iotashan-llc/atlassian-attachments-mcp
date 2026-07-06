@@ -24,6 +24,15 @@ export function parseMediaUuid(location: string): string {
   return m[1];
 }
 
+/** A bare media-services file UUID (the resolved form of an ADF media id). */
+const MEDIA_UUID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** True when the value is already a media UUID (so it needs no resolution). */
+export function isMediaUuid(value: string): boolean {
+  return MEDIA_UUID_RE.test(value);
+}
+
 /** Escape a string for use inside an XML attribute value (storage format). */
 export function xmlEscapeAttr(value: string): string {
   return value
@@ -137,6 +146,29 @@ export function appendToAdfDoc(
   if (position === "prepend") content.unshift(node);
   else content.push(node);
   return base;
+}
+
+/** Collect every media / mediaInline node in an ADF tree (depth-first). */
+export function collectMediaNodes(node: AdfNode, out: AdfNode[] = []): AdfNode[] {
+  if (node.type === "media" || node.type === "mediaInline") out.push(node);
+  for (const child of node.content ?? []) collectMediaNodes(child, out);
+  return out;
+}
+
+/** Parse a caller-supplied ADF body from a JSON string, validating it's a doc. */
+export function parseAdfDoc(body: string): AdfNode {
+  let doc: unknown;
+  try {
+    doc = JSON.parse(body);
+  } catch (err) {
+    throw new Error(
+      `Jira body must be a JSON ADF document: ${(err as Error).message}`,
+    );
+  }
+  if (!doc || typeof doc !== "object" || (doc as AdfNode).type !== "doc") {
+    throw new Error('Jira body must be an ADF document (an object with type "doc").');
+  }
+  return doc as AdfNode;
 }
 
 /** ADF doc for a new comment: optional text paragraph + the media node. */

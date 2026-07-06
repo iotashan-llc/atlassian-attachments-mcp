@@ -32,6 +32,10 @@ _Avoid_: export, sync, mirror
 Inserting an already-uploaded Attachment into a Container's body or comment so it displays (image), links (file card), or shows as an inline chip. Distinct from upload, which only stores the file.
 _Avoid_: attach, insert, paste
 
+**Set Body**:
+Replacing a Container's entire body with caller-authored content, so Embeds can sit inline anywhere (not only the top/bottom that Embed allows). The caller owns the whole body; existing content is overwritten.
+_Avoid_: edit, patch, update, rewrite
+
 **Media UUID**:
 The media-services file identifier a Jira ADF media node needs to render an Attachment. Absent from the upload/list responses; resolved from the Attachment content endpoint's redirect. (Confluence Embeds reference by filename and need no UUID.)
 _Avoid_: media id, file id, attachment id

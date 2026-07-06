@@ -12,6 +12,7 @@ import {
   jiraFileCardNode,
   jiraInlineNode,
   jiraMediaNode,
+  parseAdfDoc,
 } from "./embed.js";
 import type { Sandbox } from "./sandbox.js";
 
@@ -45,7 +46,8 @@ const INSTRUCTIONS = `This server manages Atlassian ATTACHMENTS (binaries) on Ji
 Recommended workflow when opening a ticket or page:
 - Fetch the issue/page CONTENT with the first-party Atlassian MCP AND the attachment list (list_attachments) or downloads (download_all_attachments) with THIS server in the SAME batch. The calls are independent — issue them together to save a round-trip. Screenshots attached to a ticket usually carry the real repro / acceptance detail, so pull them by default.
 - Downloads are written to a local sandbox and the path is returned (content is NOT inlined) — Read the saved path to view an image.
-- To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.`;
+- To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.
+- embed_attachment only adds at the START or END of a body. To place images INLINE next to specific content (a given step, mid-paragraph), author the whole body with set_body (this server).`;
 
 export function createServer(context: ServerContext): McpServer {
   const { jira, confluence, sandbox, siteHost } = context;
@@ -411,6 +413,46 @@ export function createServer(context: ServerContext): McpServer {
           };
         }
         return JSON.stringify(result, null, 2);
+      }),
+  );
+
+  server.registerTool(
+    "set_body",
+    {
+      title: "Set body",
+      description:
+        "Replace the ENTIRE body of a Jira issue (description) or Confluence page with caller-authored content. This is the way to place images INLINE ANYWHERE — next to a step, mid-paragraph — which embed_attachment (append/prepend only) and the first-party Atlassian MCP (strips images) cannot do. " +
+        "You author the whole body and it OVERWRITES existing content, so include everything you want to keep. Upload any attachments first with upload_attachment.\n" +
+        'Confluence: body is v2 STORAGE-format XML. Reference an uploaded attachment inline with <ac:image><ri:attachment ri:filename="diagram.png" /></ac:image> (or <ac:link> for a download link).\n' +
+        'Jira: body is an ADF document as a JSON string (an object with type "doc"). Reference an uploaded attachment inside a media / mediaInline node by putting its filename or attachmentId in attrs.id — the server resolves it to the media UUID.',
+      inputSchema: {
+        product,
+        container,
+        body: z
+          .string()
+          .min(1)
+          .describe(
+            'Full replacement body: Confluence v2 storage XML, or a Jira ADF document ("doc") as a JSON string',
+          ),
+      },
+    },
+    (args) =>
+      run(async () => {
+        if (args.product === "confluence") {
+          const res = await confluence.setBody(args.container, args.body);
+          return JSON.stringify(
+            { product: "confluence", container: args.container, ...res },
+            null,
+            2,
+          );
+        }
+        const doc = parseAdfDoc(args.body);
+        const res = await jira.setDescription(args.container, doc);
+        return JSON.stringify(
+          { product: "jira", container: args.container, ...res },
+          null,
+          2,
+        );
       }),
   );
 

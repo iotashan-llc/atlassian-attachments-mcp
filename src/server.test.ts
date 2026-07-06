@@ -82,7 +82,7 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("exposes all nine tools", async () => {
+  it("exposes all ten tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "delete_attachment",
@@ -93,6 +93,7 @@ describe("MCP server end-to-end (in-memory transport)", () => {
       "get_attachment_thumbnail",
       "list_attachments",
       "peek_archive_attachment",
+      "set_body",
       "upload_attachment",
     ]);
   });
@@ -405,5 +406,78 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     });
     expect(result.isError).toBe(true);
     expect((result.content as Array<{ text: string }>)[0].text).toMatch(/Jira-only/);
+  });
+
+  it("set_body places a Jira image inline, resolving a filename ref to a media UUID", async () => {
+    let put: { fields: { description: AdfNode } } | undefined;
+    routeFetch([
+      ["/rest/api/3/attachment/content/10001", mediaRedirect],
+      [
+        "/rest/api/3/issue/PROJ-1",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            put = JSON.parse(init.body as string);
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({ fields: { attachment: [JIRA_BEAN] } });
+        },
+      ],
+    ]);
+    const body = JSON.stringify({
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "Step 1" }] },
+        {
+          type: "mediaSingle",
+          attrs: { layout: "center" },
+          content: [{ type: "media", attrs: { type: "file", id: "report.pdf" } }],
+        },
+      ],
+    });
+    const result = await client.callTool({
+      name: "set_body",
+      arguments: { product: "jira", container: "PROJ-1", body },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ issueKey: "PROJ-1", mediaResolved: 1 });
+    const media = put!.fields.description.content![1].content![0];
+    expect(media.attrs).toMatchObject({ id: MEDIA_UUID, collection: "" });
+    // text kept in place, image stays second (inline where the caller put it)
+    expect(put!.fields.description.content![0].content![0].text).toBe("Step 1");
+  });
+
+  it("set_body replaces the whole Confluence body (version+1)", async () => {
+    let putValue = "";
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9001",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            putValue = JSON.parse(init.body as string).body.value;
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({
+            id: "9001",
+            status: "current",
+            title: "Guide",
+            version: { number: 5 },
+            body: { storage: { value: "<p>old</p>" } },
+          });
+        },
+      ],
+    ]);
+    const body =
+      '<h2>Step 1</h2><ac:image><ri:attachment ri:filename="a.png" /></ac:image><h2>Step 2</h2>';
+    const result = await client.callTool({
+      name: "set_body",
+      arguments: { product: "confluence", container: "9001", body },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ version: 6 });
+    expect(putValue).toBe(body);
+    expect(putValue).not.toContain("<p>old</p>");
   });
 });

@@ -4,6 +4,8 @@ import type { AtlassianClient } from "./http.js";
 import { AtlassianApiError } from "./errors.js";
 import {
   appendToAdfDoc,
+  collectMediaNodes,
+  isMediaUuid,
   jiraCommentDoc,
   parseMediaUuid,
   type AdfNode,
@@ -177,6 +179,52 @@ export class JiraAttachments {
         throw err;
       }
     }
+  }
+
+  /** Resolve one ADF media id (UUID passthrough, else attachmentId/filename) to a media UUID. */
+  private async resolveMediaRef(issueKey: string, ref: string): Promise<string> {
+    if (isMediaUuid(ref)) return ref;
+    // ponytail: all-digits = attachmentId, otherwise treat as a filename.
+    const id = /^\d+$/.test(ref) ? ref : await this.idByFilename(issueKey, ref);
+    return this.mediaUuid(id);
+  }
+
+  /**
+   * Replace the whole issue description with a caller-authored ADF doc,
+   * resolving any media nodes whose id is an attachmentId/filename to its
+   * media UUID. This is the way to place images inline anywhere (embed only
+   * appends/prepends). Overwrites existing content — the caller owns the doc.
+   */
+  async setDescription(
+    issueKey: string,
+    doc: AdfNode,
+  ): Promise<{ issueKey: string; mediaResolved: number }> {
+    const medias = collectMediaNodes(doc);
+    const refs = new Set<string>();
+    for (const m of medias) {
+      const id = m.attrs?.id;
+      if (typeof id === "string" && id && !isMediaUuid(id)) refs.add(id);
+    }
+    const resolved = new Map<string, string>();
+    for (const ref of refs) {
+      resolved.set(ref, await this.resolveMediaRef(issueKey, ref));
+    }
+    for (const m of medias) {
+      const id = m.attrs?.id;
+      if (typeof id === "string" && resolved.has(id)) {
+        m.attrs!.id = resolved.get(id);
+        if (m.attrs!.collection === undefined) m.attrs!.collection = "";
+      }
+    }
+    await this.client.json<void>(
+      `/rest/api/3/issue/${encodeURIComponent(issueKey)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fields: { description: doc } }),
+      },
+    );
+    return { issueKey, mediaResolved: refs.size };
   }
 
   /** Add a new comment (v3 ADF) containing the media node and optional text. */
