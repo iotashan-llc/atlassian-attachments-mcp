@@ -240,7 +240,7 @@ Attachment filenames and bodies are untrusted input — anyone who can touch a t
 - **Uploads read from anywhere** the process can read — pasted images land in OS temp dirs, screenshots in `~/Screenshots`, downloads in `~/Downloads`, and your MCP client's permission model governs the session. Run with tool approval on if your threat model includes malicious ticket content steering uploads.
 - **File bytes never flow through the protocol.** Downloads return a path and metadata, not content (thumbnails are the one deliberate exception).
 
-Design decisions are recorded in [`docs/adr/`](docs/adr/); project vocabulary in [`CONTEXT.md`](CONTEXT.md).
+Release history (what changed and why) is in [`CHANGELOG.md`](CHANGELOG.md); design decisions in [`docs/adr/`](docs/adr/); project vocabulary in [`CONTEXT.md`](CONTEXT.md).
 
 ## License
 
