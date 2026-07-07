@@ -171,6 +171,219 @@ export function parseAdfDoc(body: string): AdfNode {
   return doc as AdfNode;
 }
 
+// --- Anchored / batch placement (shared by embed_attachment + embed_attachments) ---
+
+/**
+ * Where to place an embed in a body. `position` is the append/prepend fallback;
+ * the anchors insert relative to existing content. `afterBlock` is Jira-only
+ * (Confluence storage has no reliable block index).
+ */
+export type Placement =
+  | { position: "append" | "prepend" }
+  | { afterHeading: string; occurrence?: number }
+  | { afterBlock: number }
+  | { replaceToken: string; occurrence?: number };
+
+/** One Jira embed: the media node, where to place it, and an optional dedupe key. */
+export interface AdfOp {
+  node: AdfNode;
+  placement: Placement;
+  /** When set and an existing media node with this UUID is found, replace it in place. */
+  dedupeUuid?: string;
+}
+
+/** One Confluence embed: the storage fragment, placement, and optional dedupe key. */
+export interface StorageOp {
+  fragment: string;
+  placement: Placement;
+  /** When set and an existing embed of this filename is found, replace it in place. */
+  dedupeFilename?: string;
+}
+
+function regexEscape(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeDoc(doc: AdfNode | null | undefined): AdfNode {
+  return doc && doc.type === "doc"
+    ? { ...doc, content: [...(doc.content ?? [])] }
+    : { type: "doc", version: 1, content: [] };
+}
+
+/** Concatenated text of an ADF block's descendants (for heading/token matching). */
+function adfBlockText(node: AdfNode): string {
+  if (node.type === "text") return node.text ?? "";
+  return (node.content ?? []).map(adfBlockText).join("");
+}
+
+function findBlockIndex(
+  content: AdfNode[],
+  type: string,
+  text: string,
+  occurrence: number,
+): number {
+  let seen = 0;
+  for (let i = 0; i < content.length; i++) {
+    if (content[i].type === type && adfBlockText(content[i]).trim() === text.trim()) {
+      if (++seen === occurrence) return i;
+    }
+  }
+  return -1;
+}
+
+/** Apply a list of embeds to a Jira ADF description, in order, returning a new doc. */
+export function applyAdfOps(doc: AdfNode | null | undefined, ops: AdfOp[]): AdfNode {
+  const base = normalizeDoc(doc);
+  const content = base.content!;
+  const cursor = new Map<string, number>();
+  for (const op of ops) {
+    if (op.dedupeUuid) {
+      const di = content.findIndex((b) =>
+        collectMediaNodes(b).some((m) => m.attrs?.id === op.dedupeUuid),
+      );
+      // Replace only a single-embed block (what this tool creates). If the UUID lives
+      // in a multi-media block (e.g. a mediaGroup with siblings), don't clobber it —
+      // fall through and place a fresh copy instead of destroying the neighbours.
+      if (di >= 0 && collectMediaNodes(content[di]).length === 1) {
+        content[di] = op.node;
+        continue;
+      }
+    }
+    const p = op.placement;
+    if ("position" in p) {
+      if (p.position === "prepend") content.unshift(op.node);
+      else content.push(op.node);
+      continue;
+    }
+    if ("replaceToken" in p) {
+      const ti = findBlockIndex(content, "paragraph", p.replaceToken, p.occurrence ?? 1);
+      if (ti < 0) {
+        throw new Error(
+          `Token "${p.replaceToken}" was not found as its own paragraph in the Jira description`,
+        );
+      }
+      content[ti] = op.node;
+      continue;
+    }
+    let baseIdx: number;
+    if ("afterHeading" in p) {
+      baseIdx = findBlockIndex(content, "heading", p.afterHeading, p.occurrence ?? 1);
+      if (baseIdx < 0) {
+        throw new Error(`No heading "${p.afterHeading}" in the Jira description`);
+      }
+    } else {
+      if (p.afterBlock < 1 || p.afterBlock > content.length) {
+        throw new Error(
+          `afterBlock ${p.afterBlock} is out of range (1..${content.length})`,
+        );
+      }
+      baseIdx = p.afterBlock - 1;
+    }
+    // Per-anchor cursor: repeated inserts at the same anchor keep their given order.
+    const key = JSON.stringify(p);
+    const c = cursor.get(key) ?? 0;
+    content.splice(baseIdx + 1 + c, 0, op.node);
+    cursor.set(key, c + 1);
+  }
+  return base;
+}
+
+/** Position just past the Nth plain `<hN>text</hN>` heading in DOCUMENT order, or -1. */
+function storageHeadingEnd(body: string, text: string, occurrence: number): number {
+  const esc = xmlEscapeText(text.trim());
+  const ends: number[] = [];
+  for (let n = 1; n <= 6; n++) {
+    const needle = `<h${n}>${esc}</h${n}>`;
+    let from = 0;
+    let idx: number;
+    while ((idx = body.indexOf(needle, from)) >= 0) {
+      ends.push(idx + needle.length);
+      from = idx + needle.length;
+    }
+  }
+  // occurrence is 1-based over headings sorted by their position in the document.
+  ends.sort((a, b) => a - b);
+  return ends[occurrence - 1] ?? -1;
+}
+
+/** Matches an embed this tool generated for a given (already XML-escaped) filename. */
+function storageEmbedRegex(escapedFilename: string): RegExp {
+  const f = regexEscape(escapedFilename);
+  // Tempered `(?:(?!</p>)[^])*?` cannot cross a </p>, so the match is confined to the
+  // single generated paragraph holding this filename — never spanning an earlier embed.
+  return new RegExp(
+    `<p><ac:(?:image|link)\\b(?:(?!</p>)[^])*?ri:filename="${f}"(?:(?!</p>)[^])*?</ac:(?:image|link)></p>`,
+  );
+}
+
+/** Apply a list of embeds to a Confluence storage body, in order, returning a new string. */
+export function applyStorageOps(body: string, ops: StorageOp[]): string {
+  let out = body;
+  const cursor = new Map<string, number>();
+  for (const op of ops) {
+    if (op.dedupeFilename) {
+      const re = storageEmbedRegex(xmlEscapeAttr(op.dedupeFilename));
+      if (re.test(out)) {
+        out = out.replace(re, () => op.fragment);
+        continue;
+      }
+    }
+    const p = op.placement;
+    if ("position" in p) {
+      out = p.position === "prepend" ? op.fragment + out : out + op.fragment;
+      continue;
+    }
+    if ("afterBlock" in p) {
+      throw new Error(
+        "afterBlock is Jira-only — Confluence storage has no reliable block index. Use afterHeading, replaceToken, or set_body.",
+      );
+    }
+    if ("replaceToken" in p) {
+      out = replaceStorageToken(out, p.replaceToken, op.fragment, p.occurrence ?? 1);
+      continue;
+    }
+    // afterHeading
+    const key = JSON.stringify(p);
+    const base = storageHeadingEnd(out, p.afterHeading, p.occurrence ?? 1);
+    if (base < 0) {
+      throw new Error(
+        `No plain heading "${p.afterHeading}" in the Confluence page (headings with nested markup aren't matched — use replaceToken or set_body)`,
+      );
+    }
+    const off = cursor.get(key) ?? 0;
+    out = out.slice(0, base + off) + op.fragment + out.slice(base + off);
+    cursor.set(key, off + op.fragment.length);
+  }
+  return out;
+}
+
+/** Replace the Nth `<p>token</p>` (preferred) or bare `token` with a fragment. */
+function replaceStorageToken(
+  body: string,
+  token: string,
+  fragment: string,
+  occurrence: number,
+): string {
+  // Tokens are stored as escaped text (a filename's & becomes &amp;), so search the
+  // escaped form; a literal token typed by the user is matched by its escaped bytes.
+  const esc = xmlEscapeText(token);
+  const wrapped = `<p>${esc}</p>`;
+  const target = body.includes(wrapped) ? wrapped : body.includes(esc) ? esc : null;
+  if (target === null) {
+    throw new Error(`Token "${token}" was not found in the Confluence page`);
+  }
+  let from = 0;
+  let seen = 0;
+  let idx: number;
+  while ((idx = body.indexOf(target, from)) >= 0) {
+    if (++seen === occurrence) {
+      return body.slice(0, idx) + fragment + body.slice(idx + target.length);
+    }
+    from = idx + target.length;
+  }
+  throw new Error(`Token "${token}" occurrence ${occurrence} was not found`);
+}
+
 /** ADF doc for a new comment: optional text paragraph + the media node. */
 export function jiraCommentDoc(node: AdfNode, text?: string): AdfNode {
   const content: AdfNode[] = [];

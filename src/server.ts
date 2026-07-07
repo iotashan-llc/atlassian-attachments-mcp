@@ -13,6 +13,9 @@ import {
   jiraInlineNode,
   jiraMediaNode,
   parseAdfDoc,
+  type AdfOp,
+  type Placement,
+  type StorageOp,
 } from "./embed.js";
 import type { Sandbox } from "./sandbox.js";
 
@@ -41,14 +44,53 @@ const overwrite = z
   .optional()
   .describe("Replace an existing local file (default false)");
 
+const anchorSchema = z
+  .object({
+    afterHeading: z
+      .string()
+      .min(1)
+      .optional()
+      .describe("Insert just after the heading whose text is exactly this"),
+    afterBlock: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Insert after the Nth top-level block (1-based). Jira only."),
+    replaceToken: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Replace a placeholder — a paragraph whose only text is this token (e.g. "{{img:diagram.png}}")',
+      ),
+    occurrence: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Which match to use when there are several (1-based, default 1)"),
+  })
+  .optional()
+  .describe(
+    'Insert relative to existing body content instead of position. Set exactly ONE of afterHeading / afterBlock (Jira only) / replaceToken. Overrides position. Confluence afterHeading matches plain headings only (falls back to an error — use replaceToken or set_body for rich headings).',
+  );
+
+const dedupeSchema = z
+  .enum(["none", "replace"])
+  .optional()
+  .describe(
+    '"replace" updates an existing embed of the same file in place instead of adding another copy (default "none")',
+  );
+
 const INSTRUCTIONS = `This server manages Atlassian ATTACHMENTS (binaries) on Jira issues and Confluence pages. It complements the first-party Atlassian MCP: that one does issue/page text CRUD but CANNOT read attachment binaries or render a displayed image — this one can.
 
 Recommended workflow when opening a ticket or page:
 - Fetch the issue/page CONTENT with the first-party Atlassian MCP AND the attachment list (list_attachments) or downloads (download_all_attachments) with THIS server in the SAME batch. The calls are independent — issue them together to save a round-trip. Screenshots attached to a ticket usually carry the real repro / acceptance detail, so pull them by default.
 - Downloads are written to a local sandbox and the path is returned (content is NOT inlined) — Read the saved path to view an image.
 - To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.
-- embed_attachment only adds at the START or END of a body. To place images INLINE next to specific content (a given step, mid-paragraph), author the whole body with set_body (this server).
-- set_body overwrites the whole body. For a surgical edit, round-trip: get_body (read raw storage/ADF) -> splice your change -> set_body. get_body returns Confluence storage XML and raw Jira ADF, which the first-party Atlassian MCP does not expose.`;
+- To place an image INLINE next to specific content, prefer the surgical tools: embed_attachment with an anchor (afterHeading / replaceToken / afterBlock[Jira]) and dedupe, or embed_attachments to place several in one write. Reserve set_body (whole-body overwrite) for layouts the anchored ops can't express.
+- For a surgical edit you'd rather do by hand, round-trip: get_body (read raw storage/ADF) -> splice -> set_body. get_body returns Confluence storage XML and raw Jira ADF, which the first-party Atlassian MCP does not expose.`;
 
 export function createServer(context: ServerContext): McpServer {
   const { jira, confluence, sandbox, siteHost } = context;
@@ -81,6 +123,95 @@ export function createServer(context: ServerContext): McpServer {
       mimeType: info.mimeType,
       originalFilename: info.filename,
       attachmentId: info.id,
+    };
+  }
+
+  /** One embed request as accepted by embed_attachment / embed_attachments items. */
+  interface EmbedItem {
+    attachmentId?: string;
+    filename?: string;
+    as?: "image" | "link" | "inline";
+    width?: number;
+    alt?: string;
+    linkText?: string;
+    position?: "append" | "prepend";
+    anchor?: {
+      afterHeading?: string;
+      afterBlock?: number;
+      replaceToken?: string;
+      occurrence?: number;
+    };
+    dedupe?: "none" | "replace";
+  }
+
+  function placementFrom(item: EmbedItem): Placement {
+    const a = item.anchor;
+    if (a) {
+      const set = [a.afterHeading, a.afterBlock, a.replaceToken].filter(
+        (v) => v !== undefined,
+      );
+      if (set.length !== 1) {
+        throw new Error(
+          "anchor must set exactly one of afterHeading, afterBlock, replaceToken",
+        );
+      }
+      if (a.afterHeading !== undefined)
+        return { afterHeading: a.afterHeading, occurrence: a.occurrence };
+      if (a.afterBlock !== undefined) return { afterBlock: a.afterBlock };
+      return { replaceToken: a.replaceToken!, occurrence: a.occurrence };
+    }
+    return { position: item.position ?? "append" };
+  }
+
+  async function buildConfluenceOp(
+    item: EmbedItem,
+  ): Promise<StorageOp & { filename: string }> {
+    const mode = item.as ?? "image";
+    if (mode === "inline") {
+      throw new Error(
+        'as:"inline" is Jira-only — Confluence storage has no inline file chip. Use as:"link" or as:"image".',
+      );
+    }
+    if (!item.attachmentId && !item.filename) {
+      throw new Error("Provide attachmentId or filename to identify the attachment");
+    }
+    const filename = item.attachmentId
+      ? await confluence.filenameById(item.attachmentId)
+      : item.filename!;
+    const fragment =
+      mode === "link"
+        ? confluenceLinkFragment(filename, item.linkText)
+        : confluenceImageFragment(filename, { width: item.width, alt: item.alt });
+    return {
+      fragment,
+      placement: placementFrom(item),
+      dedupeFilename: item.dedupe === "replace" ? filename : undefined,
+      filename,
+    };
+  }
+
+  async function buildJiraOp(
+    container: string,
+    item: EmbedItem,
+  ): Promise<AdfOp & { mediaUuid: string }> {
+    if (!item.attachmentId && !item.filename) {
+      throw new Error("Provide attachmentId or filename to identify the attachment");
+    }
+    const mode = item.as ?? "image";
+    const uuid = item.attachmentId
+      ? await jira.mediaUuid(item.attachmentId)
+      : await jira.mediaUuid(await jira.idByFilename(container, item.filename!));
+    const node =
+      mode === "link"
+        ? jiraFileCardNode(uuid)
+        : mode === "inline"
+          ? jiraInlineNode(uuid)
+          : jiraMediaNode(uuid, { width: item.width, alt: item.alt });
+    return {
+      node,
+      placement: placementFrom(item),
+      dedupeUuid: item.dedupe === "replace" ? uuid : undefined,
+      mediaUuid: uuid,
     };
   }
 
@@ -298,7 +429,8 @@ export function createServer(context: ServerContext): McpServer {
         "Upload the file first with upload_attachment on the same container, then call this. " +
         "Identify the attachment by attachmentId (preferred) or exact filename. " +
         'target="body" = Jira description / Confluence page body; target="comment" = a new comment. ' +
-        "Jira uses the newest v3/ADF (image=mediaSingle, link=mediaGroup, inline=mediaInline); Confluence uses v2 storage (image=ac:image, link=ac:link; inline is not supported). Re-running appends another copy (no dedupe).",
+        "Jira uses the newest v3/ADF (image=mediaSingle, link=mediaGroup, inline=mediaInline); Confluence uses v2 storage (image=ac:image, link=ac:link; inline is not supported). " +
+        'By default it appends/prepends (position); pass anchor to insert relative to existing content ("after heading X", replace a "{{token}}", or after the Nth block on Jira). By default re-running appends another copy; pass dedupe="replace" to update an existing embed of the same file in place. To place several images in ONE write, use embed_attachments.',
       inputSchema: {
         product,
         container,
@@ -342,6 +474,8 @@ export function createServer(context: ServerContext): McpServer {
           .enum(["append", "prepend"])
           .optional()
           .describe('For target="body": add at end (default) or start'),
+        anchor: anchorSchema,
+        dedupe: dedupeSchema,
       },
     },
     (args) =>
@@ -351,69 +485,127 @@ export function createServer(context: ServerContext): McpServer {
             "Provide attachmentId or filename to identify the image to embed",
           );
         }
-        const position = args.position ?? "append";
         const mode = args.as ?? "image";
-        let result: Record<string, unknown>;
 
+        // A new comment can't be anchored into or de-duplicated against.
+        if (args.target === "comment" && (args.anchor || args.dedupe === "replace")) {
+          throw new Error(
+            'anchor and dedupe apply to target="body" only, not a new comment',
+          );
+        }
+
+        let result: Record<string, unknown>;
         if (args.product === "confluence") {
-          if (mode === "inline") {
-            throw new Error(
-              'as:"inline" is Jira-only — Confluence storage has no inline file chip. Use as:"link" (renders an inline download link) or as:"image".',
-            );
-          }
-          // attachmentId is authoritative when supplied (consistent with Jira).
-          const filename = args.attachmentId
-            ? await confluence.filenameById(args.attachmentId)
-            : args.filename!;
-          const fragment =
-            mode === "link"
-              ? confluenceLinkFragment(filename, args.linkText)
-              : confluenceImageFragment(filename, {
-                  width: args.width,
-                  alt: args.alt,
-                });
-          const embedded =
-            args.target === "comment"
-              ? await confluence.embedInComment(
-                  args.container,
-                  fragment,
-                  args.commentText,
-                )
-              : await confluence.embedInBody(args.container, fragment, position);
-          result = {
-            product: "confluence",
-            target: args.target,
-            as: mode,
-            container: args.container,
-            filename,
-            ...embedded,
-          };
-        } else {
-          const uuid = args.attachmentId
-            ? await jira.mediaUuid(args.attachmentId)
-            : await jira.mediaUuid(
-                await jira.idByFilename(args.container, args.filename!),
+          if (args.target === "comment") {
+            if (mode === "inline") {
+              throw new Error(
+                'as:"inline" is Jira-only — Confluence storage has no inline file chip. Use as:"link" or as:"image".',
               );
-          const node =
-            mode === "link"
-              ? jiraFileCardNode(uuid)
-              : mode === "inline"
-                ? jiraInlineNode(uuid)
-                : jiraMediaNode(uuid, { width: args.width, alt: args.alt });
-          const embedded =
-            args.target === "comment"
-              ? await jira.embedInComment(args.container, node, args.commentText)
-              : await jira.embedInDescription(args.container, node, position);
-          result = {
-            product: "jira",
-            target: args.target,
-            as: mode,
-            container: args.container,
-            mediaUuid: uuid,
-            ...embedded,
-          };
+            }
+            const filename = args.attachmentId
+              ? await confluence.filenameById(args.attachmentId)
+              : args.filename!;
+            const fragment =
+              mode === "link"
+                ? confluenceLinkFragment(filename, args.linkText)
+                : confluenceImageFragment(filename, { width: args.width, alt: args.alt });
+            const embedded = await confluence.embedInComment(
+              args.container,
+              fragment,
+              args.commentText,
+            );
+            result = { product: "confluence", target: "comment", as: mode, container: args.container, filename, ...embedded };
+          } else {
+            const { filename, ...op } = await buildConfluenceOp(args);
+            const embedded = await confluence.applyEmbedsToBody(args.container, [op]);
+            result = { product: "confluence", target: "body", as: mode, container: args.container, filename, ...embedded };
+          }
+        } else {
+          if (args.target === "comment") {
+            const uuid = args.attachmentId
+              ? await jira.mediaUuid(args.attachmentId)
+              : await jira.mediaUuid(await jira.idByFilename(args.container, args.filename!));
+            const node =
+              mode === "link"
+                ? jiraFileCardNode(uuid)
+                : mode === "inline"
+                  ? jiraInlineNode(uuid)
+                  : jiraMediaNode(uuid, { width: args.width, alt: args.alt });
+            const embedded = await jira.embedInComment(args.container, node, args.commentText);
+            result = { product: "jira", target: "comment", as: mode, container: args.container, mediaUuid: uuid, ...embedded };
+          } else {
+            const { mediaUuid, ...op } = await buildJiraOp(args.container, args);
+            const embedded = await jira.applyEmbedsToDescription(args.container, [op]);
+            result = { product: "jira", target: "body", as: mode, container: args.container, mediaUuid, ...embedded };
+          }
         }
         return JSON.stringify(result, null, 2);
+      }),
+  );
+
+  server.registerTool(
+    "embed_attachments",
+    {
+      title: "Embed multiple attachments",
+      description:
+        "Embed several already-uploaded attachments into a Jira issue description or Confluence page body in ONE read-modify-write — applied in list order, in a single version bump (embedding N images one-by-one otherwise churns the page through N versions with reorder races). " +
+        "Each item is like an embed_attachment call minus target: identify by attachmentId or filename, choose as (image/link/inline), and place with position (append/prepend) or anchor (afterHeading / afterBlock [Jira] / replaceToken), optionally dedupe:\"replace\". Body only. Upload the files first with upload_attachment.",
+      inputSchema: {
+        product,
+        container,
+        items: z
+          .array(
+            z.object({
+              attachmentId: z.string().min(1).optional(),
+              filename: z.string().min(1).optional(),
+              as: z.enum(["image", "link", "inline"]).optional(),
+              width: z.number().int().positive().optional(),
+              alt: z.string().optional(),
+              linkText: z.string().optional(),
+              position: z.enum(["append", "prepend"]).optional(),
+              anchor: anchorSchema,
+              dedupe: dedupeSchema,
+            }),
+          )
+          .min(1)
+          .describe("Embeds to apply, in order"),
+      },
+    },
+    (args) =>
+      run(async () => {
+        if (args.product === "confluence") {
+          const built = [];
+          for (const item of args.items) built.push(await buildConfluenceOp(item));
+          const ops: StorageOp[] = built.map(({ filename, ...op }) => op);
+          const embedded = await confluence.applyEmbedsToBody(args.container, ops);
+          return JSON.stringify(
+            {
+              product: "confluence",
+              container: args.container,
+              count: ops.length,
+              filenames: built.map((b) => b.filename),
+              ...embedded,
+            },
+            null,
+            2,
+          );
+        }
+        const built = [];
+        for (const item of args.items)
+          built.push(await buildJiraOp(args.container, item));
+        const ops: AdfOp[] = built.map(({ mediaUuid, ...op }) => op);
+        const embedded = await jira.applyEmbedsToDescription(args.container, ops);
+        return JSON.stringify(
+          {
+            product: "jira",
+            container: args.container,
+            count: ops.length,
+            mediaUuids: built.map((b) => b.mediaUuid),
+            ...embedded,
+          },
+          null,
+          2,
+        );
       }),
   );
 

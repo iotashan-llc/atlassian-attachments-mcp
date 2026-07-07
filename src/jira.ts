@@ -3,13 +3,13 @@ import { openAsBlob } from "node:fs";
 import type { AtlassianClient } from "./http.js";
 import { AtlassianApiError } from "./errors.js";
 import {
-  appendToAdfDoc,
+  applyAdfOps,
   collectMediaNodes,
   isMediaUuid,
   jiraCommentDoc,
   parseMediaUuid,
   type AdfNode,
-  type Position,
+  type AdfOp,
 } from "./embed.js";
 
 /** Product-neutral attachment summary shared by both clients. */
@@ -163,32 +163,6 @@ export class JiraAttachments {
     return issue.fields?.description ?? null;
   }
 
-  /** Append/prepend a media node to the issue description (v3 ADF), preserving existing content. */
-  async embedInDescription(
-    issueKey: string,
-    node: AdfNode,
-    position: Position,
-  ): Promise<{ issueKey: string }> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const doc = appendToAdfDoc(await this.getBody(issueKey), node, position);
-        await this.client.json<void>(
-          `/rest/api/3/issue/${encodeURIComponent(issueKey)}`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fields: { description: doc } }),
-          },
-        );
-        return { issueKey };
-      } catch (err) {
-        if (attempt === 0 && err instanceof AtlassianApiError && err.status === 409)
-          continue;
-        throw err;
-      }
-    }
-  }
-
   /** Resolve one ADF media id (UUID passthrough, else attachmentId/filename) to a media UUID. */
   private async resolveMediaRef(issueKey: string, ref: string): Promise<string> {
     if (isMediaUuid(ref)) return ref;
@@ -233,6 +207,34 @@ export class JiraAttachments {
       },
     );
     return { issueKey, mediaResolved: refs.size };
+  }
+
+  /**
+   * Apply one or more placed embeds to the issue description (v3 ADF) in a single
+   * read-modify-write, preserving existing content. Supports anchors and replace.
+   */
+  async applyEmbedsToDescription(
+    issueKey: string,
+    ops: AdfOp[],
+  ): Promise<{ issueKey: string }> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const doc = applyAdfOps(await this.getBody(issueKey), ops);
+        await this.client.json<void>(
+          `/rest/api/3/issue/${encodeURIComponent(issueKey)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fields: { description: doc } }),
+          },
+        );
+        return { issueKey };
+      } catch (err) {
+        if (attempt === 0 && err instanceof AtlassianApiError && err.status === 409)
+          continue;
+        throw err;
+      }
+    }
   }
 
   /** Add a new comment (v3 ADF) containing the media node and optional text. */

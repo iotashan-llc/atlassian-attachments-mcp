@@ -82,13 +82,14 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("exposes all eleven tools", async () => {
+  it("exposes all twelve tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "delete_attachment",
       "download_all_attachments",
       "download_attachment",
       "embed_attachment",
+      "embed_attachments",
       "get_attachment_limits",
       "get_attachment_thumbnail",
       "get_body",
@@ -486,6 +487,119 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     expect(out).toMatchObject({ version: 6 });
     expect(putValue).toBe(body);
     expect(putValue).not.toContain("<p>old</p>");
+  });
+
+  it("embed_attachment anchors a Confluence image after a heading", async () => {
+    let putValue = "";
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9000",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            putValue = JSON.parse(init.body as string).body.value;
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({
+            id: "9000",
+            status: "current",
+            title: "Guide",
+            version: { number: 2 },
+            body: { storage: { value: "<h2>Setup</h2><p>text</p>" } },
+          });
+        },
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachment",
+      arguments: {
+        product: "confluence",
+        container: "9000",
+        target: "body",
+        filename: "diagram.png",
+        anchor: { afterHeading: "Setup" },
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(putValue).toBe(
+      '<h2>Setup</h2><p><ac:image><ri:attachment ri:filename="diagram.png" /></ac:image></p><p>text</p>',
+    );
+  });
+
+  it("embed_attachments applies several Confluence embeds in one write", async () => {
+    let putValue = "";
+    let gets = 0;
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9000",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            putValue = JSON.parse(init.body as string).body.value;
+            return new Response(null, { status: 204 });
+          }
+          gets++;
+          return Response.json({
+            id: "9000",
+            status: "current",
+            title: "Guide",
+            version: { number: 5 },
+            body: { storage: { value: "<p>doc</p>" } },
+          });
+        },
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachments",
+      arguments: {
+        product: "confluence",
+        container: "9000",
+        items: [{ filename: "a.png" }, { filename: "b.png", as: "link" }],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ count: 2, version: 6 });
+    // one read-modify-write, not one per image
+    expect(gets).toBe(1);
+    expect(putValue).toContain('ri:filename="a.png"');
+    expect(putValue).toContain('ri:filename="b.png"');
+    // order preserved: a before b, both after existing content
+    expect(putValue.indexOf("a.png")).toBeLessThan(putValue.indexOf("b.png"));
+    expect(putValue.startsWith("<p>doc</p>")).toBe(true);
+  });
+
+  it("embed_attachments resolves each Jira media UUID and writes once", async () => {
+    let put: { fields: { description: AdfNode } } | undefined;
+    routeFetch([
+      ["/rest/api/3/attachment/content/10001", mediaRedirect],
+      ["/rest/api/3/attachment/content/10002", mediaRedirect],
+      [
+        "/rest/api/3/issue/PROJ-1",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            put = JSON.parse(init.body as string);
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({ fields: { description: null } });
+        },
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "embed_attachments",
+      arguments: {
+        product: "jira",
+        container: "PROJ-1",
+        items: [
+          { attachmentId: "10001" },
+          { attachmentId: "10002", as: "inline" },
+        ],
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ count: 2 });
+    expect(put!.fields.description.content).toHaveLength(2);
+    expect(put!.fields.description.content![0].type).toBe("mediaSingle");
+    expect(put!.fields.description.content![1].type).toBe("paragraph"); // inline wrapped
   });
 
   it("get_body returns raw Confluence storage + version", async () => {

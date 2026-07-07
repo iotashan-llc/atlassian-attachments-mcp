@@ -4,7 +4,7 @@ A local MCP server for **Jira and Confluence Cloud attachments** — the file op
 
 The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no access to your filesystem, so it cannot upload, download, or otherwise touch attachments. This server runs locally on your own machine, complements the official MCP in the same client config, and does one job: move files between your disk and Jira issues / Confluence pages — and place them into the page.
 
-> All eleven tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
+> All twelve tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
 
 ## Setup
 
@@ -174,7 +174,8 @@ New versions publish to npm automatically — you don't reinstall anything. Each
 | `peek_archive_attachment` | Jira | list zip contents without downloading |
 | `get_attachment_thumbnail` | Jira | returns the image inline for vision models |
 | `get_attachment_limits` | Jira | attachment enabled/max-size settings |
-| `embed_attachment` | Jira + Confluence | displays / links an already-uploaded attachment at the top or bottom of a body or comment |
+| `embed_attachment` | Jira + Confluence | displays / links an already-uploaded attachment in a body or comment — append/prepend or at an anchor, with optional replace |
+| `embed_attachments` | Jira + Confluence | embeds several attachments into a body in one write (one version bump, deterministic order) |
 | `get_body` | Jira + Confluence | returns the raw current body (Confluence storage + version / Jira ADF) for round-trip edits |
 | `set_body` | Jira + Confluence | replaces the whole body with your own content, placing images inline anywhere |
 
@@ -182,17 +183,24 @@ New versions publish to npm automatically — you don't reinstall anything. Each
 
 Uploading a file only stores it — it won't show up in the description or page until you place it. Two tools do that; upload the file first with `upload_attachment` on the same issue/page, then:
 
-**`embed_attachment`** — the quick way to drop one image or file reference into a body or comment. It adds at the **top or bottom** only.
+**`embed_attachment`** — drop one image or file reference into a body or comment.
 
 - `target: "body"` — the Jira description / Confluence page body. `target: "comment"` — a new comment.
 - `as: "image"` (default) — a displayed image (`width`/`alt` optional); `as: "link"` — a clickable download link / file card for any file type (`linkText` optional); `as: "inline"` — an inline file chip (Jira only).
-- `position: "append"` (default, end) or `"prepend"` (start). Re-running appends another copy (no dedupe).
+- **Placement** (body only): by default `position: "append"` (end) or `"prepend"` (start). Or pass `anchor` to insert relative to existing content — set exactly one:
+  - `afterHeading: "Step 1"` — right after the heading with that exact text (Confluence: plain headings only; rich/nested headings error — use `replaceToken` or `set_body`).
+  - `replaceToken: "{{img:diagram.png}}"` — replace a placeholder paragraph whose only text is that token.
+  - `afterBlock: 3` — after the 3rd top-level block (**Jira only**, 1-based).
+  - add `occurrence: 2` to pick which match when there are several.
+- **Dedupe**: by default re-running adds another copy; pass `dedupe: "replace"` to update an existing embed of the same file in place instead (Jira matches by media UUID, Confluence by the `ri:filename` of an embed this tool created).
 
 | `as` | Jira (v3 ADF) | Confluence (v2 storage) |
 |---|---|---|
 | `image` | `mediaSingle` | `<ac:image><ri:attachment>` |
 | `link` | `mediaGroup` (file card) | `<ac:link><ri:attachment>` |
 | `inline` | `mediaInline` | unsupported — throws; use `link` |
+
+**`embed_attachments`** — embed several files into a body in a **single** read-modify-write, applied in list order. Each `items[]` entry is an `embed_attachment` minus `target` (identify by `attachmentId`/`filename`, choose `as`, place with `position`/`anchor`, optional `dedupe`). Use it instead of calling `embed_attachment` in a loop: embedding six images one at a time churns the page through six versions with reorder races; this does it in one version bump, in order.
 
 **`set_body`** — for precise placement: put an image **next to a specific step, mid-paragraph, anywhere**. You author the *entire* body and it overwrites what was there, so include everything you want to keep.
 

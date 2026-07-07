@@ -12,6 +12,13 @@ A Jira ADF media node's `id` is the media-services file UUID — which the uploa
 
 `embed_attachment` only inserts a reference at the start or end of a body. To place images inline anywhere (next to a step, mid-paragraph), `set_body` lets the caller author the entire body: Confluence storage XML written straight through (attachments referenced by filename, no resolution needed), or a Jira ADF `doc` whose `media`/`mediaInline` nodes carry a filename or attachmentId in `attrs.id`. Before the PUT, the server walks the ADF tree (`collectMediaNodes`), resolves each non-UUID `id` to a media UUID (numeric id = attachmentId, otherwise a filename lookup), and stamps `collection: ""`. This reuses the same UUID mechanic below rather than asking the caller — an LLM — to know UUIDs it can't see. The body is overwritten wholesale, so the caller owns the complete content.
 
+## Anchored / batch / replace placement
+
+`embed_attachment` and `embed_attachments` place embeds by a shared pure reducer in `embed.ts` (`applyAdfOps` for Jira, `applyStorageOps` for Confluence); client methods stay I/O-only (`applyEmbedsToDescription` / `applyEmbedsToBody`, each a single read-modify-write with the one-retry-on-409 policy). The two representations force asymmetric handling, confirmed by an independent design pass with two peer models:
+
+- **Jira ADF is a tree**, so anchors are clean array ops on `content[]`: `afterHeading` (match a heading block by its concatenated text), `afterBlock` (1-based index), `replaceToken` (swap a paragraph whose text is exactly the token), and `dedupe:"replace"` (find a block containing a media node with the same UUID). 
+- **Confluence storage is a raw XML string with no DOM** — we deliberately keep it that way (no XML/DOM dependency) and do only bounded string edits that fail closed: `afterHeading` matches a *plain* `<hN>text</hN>` only (rich/nested headings throw, pointing at `replaceToken`/`set_body`); `replaceToken` swaps a `<p>token</p>` (or bare token); `dedupe` replaces an embed *this tool generated* for a filename via a scoped regex; and `afterBlock` is rejected as Jira-only (no reliable block index in a string). Batch application is progressive with a per-anchor cursor so repeated inserts at the same anchor keep their given order.
+
 ## Consequences
 
 - Confluence storage and Jira ADF shapes are pinned to what those APIs accept today; an API change means updating the builders in `embed.ts`, not bumping a dependency.
