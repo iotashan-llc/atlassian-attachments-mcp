@@ -64,7 +64,7 @@ export class JiraAttachments {
     issueKey: string,
     filePath: string,
     filename?: string,
-  ): Promise<AttachmentInfo[]> {
+  ): Promise<Array<AttachmentInfo & { mediaId: string; collection: string }>> {
     const form = new FormData();
     form.append(
       "file",
@@ -75,7 +75,14 @@ export class JiraAttachments {
       `/rest/api/3/issue/${encodeURIComponent(issueKey)}/attachments`,
       form,
     );
-    return created.map(toInfo);
+    // Resolve the media UUID so callers can author ADF/HTML media nodes directly,
+    // not just storage ri:attachment-by-filename. collection is "" for issue media.
+    const out = [];
+    for (const bean of created) {
+      const info = toInfo(bean);
+      out.push({ ...info, mediaId: await this.mediaUuid(info.id), collection: "" });
+    }
+    return out;
   }
 
   async metadata(id: string): Promise<AttachmentInfo> {
@@ -148,7 +155,8 @@ export class JiraAttachments {
     return matches[0].id;
   }
 
-  private async description(issueKey: string): Promise<AdfNode | null> {
+  /** The issue description as raw v3 ADF (null when empty) — read side of set_body. */
+  async getBody(issueKey: string): Promise<AdfNode | null> {
     const issue = await this.client.json<{
       fields?: { description?: AdfNode | null };
     }>(`/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=description`);
@@ -163,7 +171,7 @@ export class JiraAttachments {
   ): Promise<{ issueKey: string }> {
     for (let attempt = 0; ; attempt++) {
       try {
-        const doc = appendToAdfDoc(await this.description(issueKey), node, position);
+        const doc = appendToAdfDoc(await this.getBody(issueKey), node, position);
         await this.client.json<void>(
           `/rest/api/3/issue/${encodeURIComponent(issueKey)}`,
           {

@@ -158,6 +158,18 @@ export class ConfluenceAttachments {
     }
   }
 
+  /** The page body as raw v2 storage XML + current version — read side of set_body. */
+  async getBody(pageId: string): Promise<{ value: string; version: number }> {
+    const page = await this.client.json<{
+      version: { number: number };
+      body: { storage: { value: string } };
+    }>(`/wiki/api/v2/pages/${encodeURIComponent(pageId)}?body-format=storage`);
+    return {
+      value: page.body.storage.value ?? "",
+      version: page.version.number,
+    };
+  }
+
   /**
    * Replace the whole page body with caller-authored v2 storage XML (version+1).
    * The way to place images inline anywhere — reference an uploaded attachment

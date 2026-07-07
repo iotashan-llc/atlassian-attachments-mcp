@@ -82,7 +82,7 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it("exposes all ten tools", async () => {
+  it("exposes all eleven tools", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       "delete_attachment",
@@ -91,6 +91,7 @@ describe("MCP server end-to-end (in-memory transport)", () => {
       "embed_attachment",
       "get_attachment_limits",
       "get_attachment_thumbnail",
+      "get_body",
       "list_attachments",
       "peek_archive_attachment",
       "set_body",
@@ -272,6 +273,7 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     const source = path.join(dir, "notes.txt");
     await fs.writeFile(source, "hello");
     routeFetch([
+      ["/rest/api/3/attachment/content/10001", mediaRedirect],
       [
         "/rest/api/3/issue/PROJ-1/attachments",
         () => Response.json([JIRA_BEAN]),
@@ -283,7 +285,12 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     });
     expect(result.isError).toBeFalsy();
     const text = (result.content as Array<{ text: string }>)[0].text;
-    expect(JSON.parse(text)[0].id).toBe("10001");
+    // upload also resolves the media UUID so callers can author ADF media nodes.
+    expect(JSON.parse(text)[0]).toMatchObject({
+      id: "10001",
+      mediaId: MEDIA_UUID,
+      collection: "",
+    });
   });
 
   it("surfaces API errors as isError results, not crashes", async () => {
@@ -479,5 +486,50 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     expect(out).toMatchObject({ version: 6 });
     expect(putValue).toBe(body);
     expect(putValue).not.toContain("<p>old</p>");
+  });
+
+  it("get_body returns raw Confluence storage + version", async () => {
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9001",
+        () =>
+          Response.json({
+            id: "9001",
+            status: "current",
+            title: "Guide",
+            version: { number: 7 },
+            body: { storage: { value: "<p>hello</p>" } },
+          }),
+      ],
+    ]);
+    const result = await client.callTool({
+      name: "get_body",
+      arguments: { product: "confluence", container: "9001" },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({
+      representation: "storage",
+      version: 7,
+      body: "<p>hello</p>",
+    });
+  });
+
+  it("get_body returns the Jira description as raw ADF", async () => {
+    const doc = {
+      type: "doc",
+      version: 1,
+      content: [{ type: "paragraph", content: [{ type: "text", text: "hi" }] }],
+    };
+    routeFetch([
+      ["/rest/api/3/issue/PROJ-1", () => Response.json({ fields: { description: doc } })],
+    ]);
+    const result = await client.callTool({
+      name: "get_body",
+      arguments: { product: "jira", container: "PROJ-1" },
+    });
+    expect(result.isError).toBeFalsy();
+    const out = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+    expect(out).toMatchObject({ representation: "adf", body: doc });
   });
 });

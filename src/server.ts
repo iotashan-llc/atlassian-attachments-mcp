@@ -47,7 +47,8 @@ Recommended workflow when opening a ticket or page:
 - Fetch the issue/page CONTENT with the first-party Atlassian MCP AND the attachment list (list_attachments) or downloads (download_all_attachments) with THIS server in the SAME batch. The calls are independent — issue them together to save a round-trip. Screenshots attached to a ticket usually carry the real repro / acceptance detail, so pull them by default.
 - Downloads are written to a local sandbox and the path is returned (content is NOT inlined) — Read the saved path to view an image.
 - To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.
-- embed_attachment only adds at the START or END of a body. To place images INLINE next to specific content (a given step, mid-paragraph), author the whole body with set_body (this server).`;
+- embed_attachment only adds at the START or END of a body. To place images INLINE next to specific content (a given step, mid-paragraph), author the whole body with set_body (this server).
+- set_body overwrites the whole body. For a surgical edit, round-trip: get_body (read raw storage/ADF) -> splice your change -> set_body. get_body returns Confluence storage XML and raw Jira ADF, which the first-party Atlassian MCP does not expose.`;
 
 export function createServer(context: ServerContext): McpServer {
   const { jira, confluence, sandbox, siteHost } = context;
@@ -413,6 +414,45 @@ export function createServer(context: ServerContext): McpServer {
           };
         }
         return JSON.stringify(result, null, 2);
+      }),
+  );
+
+  server.registerTool(
+    "get_body",
+    {
+      title: "Get body",
+      description:
+        "Return the raw current body of a Jira issue (description) or Confluence page — the read half of a get_body → edit → set_body round-trip for surgical inserts without re-authoring the whole page. " +
+        "Confluence returns v2 storage XML plus the current version number; Jira returns the description as a v3 ADF document (null when empty). This is the storage/ADF the first-party Atlassian MCP won't give you.",
+      inputSchema: { product, container },
+    },
+    (args) =>
+      run(async () => {
+        if (args.product === "confluence") {
+          const { value, version } = await confluence.getBody(args.container);
+          return JSON.stringify(
+            {
+              product: "confluence",
+              container: args.container,
+              representation: "storage",
+              version,
+              body: value,
+            },
+            null,
+            2,
+          );
+        }
+        const doc = await jira.getBody(args.container);
+        return JSON.stringify(
+          {
+            product: "jira",
+            container: args.container,
+            representation: "adf",
+            body: doc,
+          },
+          null,
+          2,
+        );
       }),
   );
 

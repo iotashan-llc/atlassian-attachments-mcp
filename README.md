@@ -4,7 +4,7 @@ A local MCP server for **Jira and Confluence Cloud attachments** — the file op
 
 The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no access to your filesystem, so it cannot upload, download, or otherwise touch attachments. This server runs locally on your own machine, complements the official MCP in the same client config, and does one job: move files between your disk and Jira issues / Confluence pages — and place them into the page.
 
-> All ten tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
+> All eleven tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
 
 ## Setup
 
@@ -167,7 +167,7 @@ New versions publish to npm automatically — you don't reinstall anything. Each
 | Tool | Products | Notes |
 |---|---|---|
 | `list_attachments` | Jira + Confluence | id, filename, size, MIME type, author |
-| `upload_attachment` | Jira + Confluence | reads any local path |
+| `upload_attachment` | Jira + Confluence | reads any local path; Jira also returns the media id + collection |
 | `download_attachment` | Jira + Confluence | writes into the sandbox, returns path + metadata |
 | `download_all_attachments` | Jira + Confluence | bulk, per issue/page; per-file results |
 | `delete_attachment` | Jira + Confluence | permanent |
@@ -175,6 +175,7 @@ New versions publish to npm automatically — you don't reinstall anything. Each
 | `get_attachment_thumbnail` | Jira | returns the image inline for vision models |
 | `get_attachment_limits` | Jira | attachment enabled/max-size settings |
 | `embed_attachment` | Jira + Confluence | displays / links an already-uploaded attachment at the top or bottom of a body or comment |
+| `get_body` | Jira + Confluence | returns the raw current body (Confluence storage + version / Jira ADF) for round-trip edits |
 | `set_body` | Jira + Confluence | replaces the whole body with your own content, placing images inline anywhere |
 
 ### Embedding attachments
@@ -214,6 +215,10 @@ Uploading a file only stores it — it won't show up in the description or page 
   ```
 
 This is the only way to interleave images with text where you want them — `embed_attachment` can't, and the official Atlassian MCP's page/description update strips images entirely.
+
+For a **surgical** edit rather than a full re-author, round-trip it: call `get_body` to read the current storage/ADF, splice your change into that exact content, then `set_body` it back. `get_body` returns what the official Atlassian MCP won't — Confluence *storage* XML (its API only hands back markdown/HTML/ADF) and the raw Jira ADF.
+
+> **`set_body` is storage/ADF only — not markdown.** Confluence bodies must be storage XML and Jira bodies must be ADF. Don't pass markdown: the first-party markdown importer is lossy (it strips images and collapses nested lists), which is exactly what this tool exists to avoid.
 
 Jira's media nodes need the attachment's *media-services UUID*, which the upload/list APIs never expose. The server resolves it on the fly from the attachment content endpoint's redirect (`GET /rest/api/3/attachment/content/{id}` → `302` to `…/file/<UUID>/binary`). Confluence references attachments by filename, so no UUID is involved there.
 
