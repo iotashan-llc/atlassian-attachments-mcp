@@ -628,6 +628,7 @@ export function createServer(context: ServerContext): McpServer {
               container: args.container,
               representation: "storage",
               version,
+              length: value.length,
               body: value,
             },
             null,
@@ -640,6 +641,7 @@ export function createServer(context: ServerContext): McpServer {
             product: "jira",
             container: args.container,
             representation: "adf",
+            length: doc ? JSON.stringify(doc).length : 0,
             body: doc,
           },
           null,
@@ -666,12 +668,22 @@ export function createServer(context: ServerContext): McpServer {
           .describe(
             'Full replacement body: Confluence v2 storage XML, or a Jira ADF document ("doc") as a JSON string',
           ),
+        allowShrink: z
+          .boolean()
+          .optional()
+          .describe(
+            "Allow replacing the body with one less than half its current size. Off by default as a guard against overwriting a page from a truncated/partial read.",
+          ),
       },
     },
     (args) =>
       run(async () => {
         if (args.product === "confluence") {
-          const res = await confluence.setBody(args.container, args.body);
+          const res = await confluence.setBody(
+            args.container,
+            args.body,
+            args.allowShrink,
+          );
           return JSON.stringify(
             { product: "confluence", container: args.container, ...res },
             null,
@@ -679,7 +691,7 @@ export function createServer(context: ServerContext): McpServer {
           );
         }
         const doc = parseAdfDoc(args.body);
-        const res = await jira.setDescription(args.container, doc);
+        const res = await jira.setDescription(args.container, doc, args.allowShrink);
         return JSON.stringify(
           { product: "jira", container: args.container, ...res },
           null,

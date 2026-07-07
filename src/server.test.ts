@@ -602,6 +602,45 @@ describe("MCP server end-to-end (in-memory transport)", () => {
     expect(put!.fields.description.content![1].type).toBe("paragraph"); // inline wrapped
   });
 
+  it("set_body refuses to shrink a large Confluence body without allowShrink", async () => {
+    const big = "<p>" + "x".repeat(500) + "</p>";
+    let puts = 0;
+    routeFetch([
+      [
+        "/wiki/api/v2/pages/9001",
+        (url, init) => {
+          if (init?.method === "PUT") {
+            puts++;
+            return new Response(null, { status: 204 });
+          }
+          return Response.json({
+            id: "9001",
+            status: "current",
+            title: "Guide",
+            version: { number: 5 },
+            body: { storage: { value: big } },
+          });
+        },
+      ],
+    ]);
+    const args = {
+      product: "confluence",
+      container: "9001",
+      body: "<p>tiny</p>",
+    };
+    const blocked = await client.callTool({ name: "set_body", arguments: args });
+    expect(blocked.isError).toBe(true);
+    expect((blocked.content as Array<{ text: string }>)[0].text).toMatch(/Refusing to shrink/);
+    expect(puts).toBe(0);
+
+    const ok = await client.callTool({
+      name: "set_body",
+      arguments: { ...args, allowShrink: true },
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(puts).toBe(1);
+  });
+
   it("get_body returns raw Confluence storage + version", async () => {
     routeFetch([
       [

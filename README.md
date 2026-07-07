@@ -224,7 +224,9 @@ Uploading a file only stores it — it won't show up in the description or page 
 
 This is the only way to interleave images with text where you want them — `embed_attachment` can't, and the official Atlassian MCP's page/description update strips images entirely.
 
-For a **surgical** edit rather than a full re-author, round-trip it: call `get_body` to read the current storage/ADF, splice your change into that exact content, then `set_body` it back. `get_body` returns what the official Atlassian MCP won't — Confluence *storage* XML (its API only hands back markdown/HTML/ADF) and the raw Jira ADF.
+**Prefer anchors over re-authoring a large page.** For a big page, don't read the whole body back just to add an image — `embed_attachment` with an `anchor` (or `embed_attachments`) inserts in place without ever fetching the full body, which also sidesteps the first-party page-read hitting an LLM's token limit. `set_body` also **refuses to replace a non-trivial body with one less than half its size** (pass `allowShrink: true` to override) — a guard against overwriting a page from a truncated or partial read.
+
+For a **surgical** edit rather than a full re-author, round-trip it: call `get_body` to read the current storage/ADF (it reports `length` so you can tell how big it is first), splice your change into that exact content, then `set_body` it back. `get_body` returns what the official Atlassian MCP won't — Confluence *storage* XML (its API only hands back markdown/HTML/ADF) and the raw Jira ADF.
 
 > **`set_body` is storage/ADF only — not markdown.** Confluence bodies must be storage XML and Jira bodies must be ADF. Don't pass markdown: the first-party markdown importer is lossy (it strips images and collapses nested lists), which is exactly what this tool exists to avoid.
 

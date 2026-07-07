@@ -171,6 +171,15 @@ export function parseAdfDoc(body: string): AdfNode {
   return doc as AdfNode;
 }
 
+/**
+ * True when replacing `oldText` with `newText` looks like accidental content loss —
+ * a non-trivial body shrinking by more than half. Guards set_body against the
+ * "wrote back a truncated read" failure; the caller can override with allowShrink.
+ */
+export function bodyShrinkTooMuch(oldText: string, newText: string): boolean {
+  return oldText.length > 200 && newText.length < oldText.length * 0.5;
+}
+
 // --- Anchored / batch placement (shared by embed_attachment + embed_attachments) ---
 
 /**

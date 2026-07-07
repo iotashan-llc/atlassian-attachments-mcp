@@ -4,6 +4,7 @@ import type { AtlassianClient } from "./http.js";
 import { AtlassianApiError } from "./errors.js";
 import {
   applyAdfOps,
+  bodyShrinkTooMuch,
   collectMediaNodes,
   isMediaUuid,
   jiraCommentDoc,
@@ -180,7 +181,19 @@ export class JiraAttachments {
   async setDescription(
     issueKey: string,
     doc: AdfNode,
+    allowShrink = false,
   ): Promise<{ issueKey: string; mediaResolved: number }> {
+    if (!allowShrink) {
+      const current = await this.getBody(issueKey);
+      if (
+        current &&
+        bodyShrinkTooMuch(JSON.stringify(current), JSON.stringify(doc))
+      ) {
+        throw new Error(
+          `Refusing to shrink the issue description from ${JSON.stringify(current).length} to ${JSON.stringify(doc).length} chars — this often means content was lost from a truncated read. Pass allowShrink: true to proceed.`,
+        );
+      }
+    }
     const medias = collectMediaNodes(doc);
     const refs = new Set<string>();
     for (const m of medias) {

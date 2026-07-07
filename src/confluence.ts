@@ -3,7 +3,12 @@ import { openAsBlob } from "node:fs";
 import type { AtlassianClient } from "./http.js";
 import type { AttachmentInfo } from "./jira.js";
 import { AtlassianApiError } from "./errors.js";
-import { applyStorageOps, xmlEscapeText, type StorageOp } from "./embed.js";
+import {
+  applyStorageOps,
+  bodyShrinkTooMuch,
+  xmlEscapeText,
+  type StorageOp,
+} from "./embed.js";
 
 /**
  * Confluence Cloud straddles two API generations: list/get/delete live on
@@ -128,7 +133,11 @@ export class ConfluenceAttachments {
    * with <ac:image><ri:attachment ri:filename="..."/></ac:image>. Overwrites
    * existing content, so the caller must supply the complete body.
    */
-  async setBody(pageId: string, value: string): Promise<{ version: number }> {
+  async setBody(
+    pageId: string,
+    value: string,
+    allowShrink = false,
+  ): Promise<{ version: number }> {
     for (let attempt = 0; ; attempt++) {
       try {
         const page = await this.client.json<{
@@ -136,7 +145,14 @@ export class ConfluenceAttachments {
           status: string;
           title: string;
           version: { number: number };
+          body: { storage: { value: string } };
         }>(`/wiki/api/v2/pages/${encodeURIComponent(pageId)}?body-format=storage`);
+        const current = page.body.storage.value ?? "";
+        if (!allowShrink && bodyShrinkTooMuch(current, value)) {
+          throw new Error(
+            `Refusing to shrink the page body from ${current.length} to ${value.length} chars — this often means content was lost from a truncated read. Pass allowShrink: true to proceed.`,
+          );
+        }
         const number = page.version.number + 1;
         await this.client.json<void>(
           `/wiki/api/v2/pages/${encodeURIComponent(pageId)}`,
