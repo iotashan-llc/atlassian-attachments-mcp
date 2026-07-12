@@ -6,7 +6,7 @@
   "author": "iotashan",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/iotashan/atlassian-attachments-mcp.git"
+    "url": "git+https://github.com/iotashan-llc/atlassian-attachments-mcp.git"
   },
   "type": "module",
   "bin": {
