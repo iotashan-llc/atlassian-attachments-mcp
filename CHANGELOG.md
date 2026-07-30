@@ -6,6 +6,32 @@ and **why**. The project complements the first-party (remote) Atlassian MCP, whi
 cannot touch attachment binaries or render/place images — so the "why" here is
 almost always "close a gap that MCP structurally can't."
 
+## [1.2.1] — 2026-07-30
+
+Security patch. No functional change.
+
+### Security
+- **Raised the `@modelcontextprotocol/sdk` floor from `^1.12.0` to `^1.30.0`** and
+  refreshed the lockfile, clearing four transitive advisories — two flagged by
+  Dependabot, two more that `npm audit` found alongside them:
+  - `fast-uri` < 3.1.4 (high) — host confusion via a literal backslash authority
+    delimiter ([GHSA-v2hh-gcrm-f6hx](https://github.com/advisories/GHSA-v2hh-gcrm-f6hx)),
+    reached through `ajv`.
+  - `@hono/node-server` < 2.0.5 (moderate) — `serve-static` path traversal on
+    Windows via an encoded backslash
+    ([GHSA-frvp-7c67-39w9](https://github.com/advisories/GHSA-frvp-7c67-39w9)).
+  - `postcss` ≤ 8.5.17 (high) — source-map path traversal
+    ([GHSA-r28c-9q8g-f849](https://github.com/advisories/GHSA-r28c-9q8g-f849)),
+    dev-only, via `vitest`.
+
+  *Why the floor moved rather than just the lockfile:* this package publishes only
+  `dist`, so an installing client resolves the SDK against its own tree and never
+  reads our lockfile. A lockfile-only fix would have shipped an identical `dist`
+  and protected nobody. `^1.30.0` makes the clean version the contract. None of the
+  vulnerable code paths were reachable from this server — it neither serves static
+  files nor parses untrusted URIs through `ajv` — so this is hygiene, not an
+  exploitable fix.
+
 ## [1.2.0] — 2026-07-06
 
 Field-feedback release: authoring multi-image Confluence docs with 1.1.0 surfaced
