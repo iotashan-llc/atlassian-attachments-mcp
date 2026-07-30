@@ -2,9 +2,50 @@
 
 All notable changes to `atlassian-attachments-mcp`. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); each entry records **what** changed
-and **why**. The project complements the first-party (remote) Atlassian MCP, which
-cannot touch attachment binaries or render/place images — so the "why" here is
-almost always "close a gap that MCP structurally can't."
+and **why**. The project complements the first-party (remote) Atlassian MCP: it moves
+attachment binaries without a shell, and writes Jira ADF bodies without losing the
+media already in them.
+
+## [2.0.0] — 2026-07-30
+
+Re-evaluation release, prompted by Atlassian's
+[Rovo MCP v2 preview](https://developer.atlassian.com/cloud/rovo-mcp/preview/tools/).
+The preview turned out to change little; testing the **current** first-party server
+against ours changed a lot.
+
+### Removed (breaking)
+- **`peek_archive_attachment`** and **`get_attachment_limits`**.
+  *Why:* neither was made redundant by Atlassian — both failed on value per schema
+  token. Every tool's schema is re-sent in every session of every client, so a
+  Jira-only zip lister (covered by `download_attachment` plus a step) and a one-shot
+  enabled/max-size diagnostic weren't paying for their permanent place on the
+  surface. Ten tools, down from twelve. See
+  [ADR 0005](docs/adr/0005-scope-narrowed-to-bytes-and-jira-adf.md).
+
+### Changed
+- **Confluence body tools demoted to optional.** `get_body`, `set_body`,
+  `embed_attachment`, and `embed_attachments` still accept Confluence, but their
+  descriptions now point at the first-party server first.
+  *Why:* `getConfluencePage` / `updateConfluencePage` with `contentFormat: "html"`
+  now round-trip Confluence bodies losslessly — media nodes, layout, and
+  `data-local-id` intact — and place images at arbitrary inline positions, which
+  `embed_attachment` never could. Verified live, July 2026. The one thing left that
+  HTML+ can't do is reference an attachment by filename, which is exactly what a
+  just-uploaded file needs, since no first-party Confluence tool exposes its media
+  UUID.
+- **Jira body claims sharpened and evidenced.** `getJiraIssue(responseContentFormat:
+  "adf")` returns markdown regardless of the request, degrading `mediaSingle` to a
+  `blob:` URL with a null `localId` and empty `collection`; writing that back
+  destroys the embed. `get_body` returns real ADF. This is now the strongest claim
+  in the project and the README shows the side-by-side.
+- **Corrected four claims that had gone stale** in tool descriptions, server
+  instructions, and the README — chiefly "the first-party MCP won't give you
+  storage/ADF" and "its page update strips images," both of which are no longer
+  true for Confluence.
+- **README** gained a *What this does that the official MCP doesn't* section with a
+  dated capability matrix.
+  *Why:* Atlassian closed the Confluence gap without announcing it. Competitive
+  claims need a verification date attached, not a permanent assertion.
 
 ## [1.2.1] — 2026-07-30
 
