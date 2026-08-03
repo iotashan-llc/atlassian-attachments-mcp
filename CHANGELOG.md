@@ -6,7 +6,7 @@ and **why**. The project complements the first-party (remote) Atlassian MCP: it 
 attachment binaries without a shell, and writes Jira ADF bodies without losing the
 media already in them.
 
-## [2.0.0] — 2026-07-30
+## [2.0.0] — 2026-08-03
 
 Re-evaluation release, prompted by Atlassian's
 [Rovo MCP v2 preview](https://developer.atlassian.com/cloud/rovo-mcp/preview/tools/).
@@ -47,7 +47,24 @@ against ours changed a lot.
   *Why:* Atlassian closed the Confluence gap without announcing it. Competitive
   claims need a verification date attached, not a permanent assertion.
 
-## [1.2.1] — 2026-07-30
+### Security
+- Refreshed the lockfile for three advisories disclosed after 1.2.1 shipped, all
+  transitive under `@modelcontextprotocol/sdk` and all resolved within its existing
+  ranges (no dependency floor change was needed):
+  - `fast-uri` → 3.1.5 (high) — a **second** host-confusion advisory
+    ([GHSA-7p8r-x3mc-p8w7](https://github.com/advisories/GHSA-7p8r-x3mc-p8w7)) whose
+    range covers 3.1.4, the version 1.2.1 shipped to fix the *first* one.
+  - `hono` → 4.13.0 (moderate) — ReDoS in CORS middleware
+    ([GHSA-8j4g-w8fx-2239](https://github.com/advisories/GHSA-8j4g-w8fx-2239)).
+  - `ip-address` → 10.4.0 (high) — three SSRF / trust-boundary bypasses
+    ([GHSA-mwp4-54f8-5fhr](https://github.com/advisories/GHSA-mwp4-54f8-5fhr),
+    [GHSA-4xrf-jv44-h6hh](https://github.com/advisories/GHSA-4xrf-jv44-h6hh),
+    [GHSA-22jq-vg5j-6vgg](https://github.com/advisories/GHSA-22jq-vg5j-6vgg)).
+
+  None are reachable from this server, which runs no HTTP listener, no CORS
+  middleware, and resolves no user-supplied addresses.
+
+## [1.2.1] — 2026-08-03
 
 Security patch. No functional change.
 
