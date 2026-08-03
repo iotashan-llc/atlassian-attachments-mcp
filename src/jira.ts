@@ -32,14 +32,6 @@ interface JiraAttachmentBean {
   author?: { displayName?: string };
 }
 
-export interface ArchiveEntry {
-  path?: string;
-  label?: string;
-  size?: number;
-  mediaType?: string;
-  index?: number;
-}
-
 function toInfo(bean: JiraAttachmentBean): AttachmentInfo {
   return {
     id: String(bean.id),
@@ -111,20 +103,6 @@ export class JiraAttachments {
       `/rest/api/3/attachment/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     );
-  }
-
-  peek(id: string): Promise<{
-    entries?: ArchiveEntry[];
-    totalEntryCount?: number;
-    name?: string;
-  }> {
-    return this.client.json(
-      `/rest/api/3/attachment/${encodeURIComponent(id)}/expand/human`,
-    );
-  }
-
-  limits(): Promise<{ enabled: boolean; uploadLimit: number }> {
-    return this.client.json("/rest/api/3/attachment/meta");
   }
 
   /**

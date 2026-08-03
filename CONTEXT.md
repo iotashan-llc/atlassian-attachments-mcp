@@ -1,6 +1,6 @@
 # Atlassian Attachments
 
-A local MCP server for attachment operations on Jira issues and Confluence pages — the file I/O the official (remote) Atlassian MCP server cannot do.
+A local MCP server for attachment operations on Jira issues and Confluence pages — the file I/O the official (remote) Atlassian MCP server cannot do, plus the lossless Jira ADF body access it won't give you.
 
 ## Language
 
@@ -45,5 +45,5 @@ The single local directory downloads are confined to; the server never writes ou
 _Avoid_: workspace, output dir, cache
 
 **Official Atlassian MCP**:
-Atlassian's own remote MCP server. This project complements it in the same client config; it never duplicates what that server already does.
+Atlassian's own remote MCP server, including the Rovo MCP v2 preview. This project complements it in the same client config; it never duplicates what that server already does — a moving target, so capability claims about it carry a verification date (see [ADR 0005](docs/adr/0005-scope-narrowed-to-bytes-and-jira-adf.md)).
 _Avoid_: Rovo MCP, Atlassian API

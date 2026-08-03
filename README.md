@@ -1,10 +1,12 @@
 # atlassian-attachments-mcp
 
-A local MCP server for **Jira and Confluence Cloud attachments** — the file operations the official Atlassian MCP server can't do.
+A local MCP server for **Jira and Confluence Cloud attachments** — moving real file bytes between your disk and Atlassian, and writing Jira bodies without losing the images already in them.
 
-The official Atlassian MCP is remote: it runs in Atlassian's cloud and has no access to your filesystem, so it cannot upload, download, or otherwise touch attachments. This server runs locally on your own machine, complements the official MCP in the same client config, and does one job: move files between your disk and Jira issues / Confluence pages — and place them into the page.
+The official Atlassian MCP runs in Atlassian's cloud and has no access to your filesystem. Its newer [Rovo MCP v2 preview](https://developer.atlassian.com/cloud/rovo-mcp/preview/tools/) does add attachment operations, but three of its four transfer tools return a **curl command for your client to run** rather than moving bytes themselves — which needs a shell, puts short-lived signed URLs into your shell history, and never lets the model actually see the file. This server runs locally, complements the official one in the same client config, and does the parts that genuinely require a local process.
 
-> All twelve tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
+> All ten tools are implemented, unit- and integration-tested, and live-verified against a real Atlassian site.
+
+**See [What this does that the official MCP doesn't](#what-this-does-that-the-official-mcp-doesnt) for the current, verified split** — the official server has closed the Confluence gap, so several tools here are now Jira-first.
 
 ## Setup
 
@@ -171,13 +173,59 @@ New versions publish to npm automatically — you don't reinstall anything. Each
 | `download_attachment` | Jira + Confluence | writes into the sandbox, returns path + metadata |
 | `download_all_attachments` | Jira + Confluence | bulk, per issue/page; per-file results |
 | `delete_attachment` | Jira + Confluence | permanent |
-| `peek_archive_attachment` | Jira | list zip contents without downloading |
 | `get_attachment_thumbnail` | Jira | returns the image inline for vision models |
-| `get_attachment_limits` | Jira | attachment enabled/max-size settings |
-| `embed_attachment` | Jira + Confluence | displays / links an already-uploaded attachment in a body or comment — append/prepend or at an anchor, with optional replace |
-| `embed_attachments` | Jira + Confluence | embeds several attachments into a body in one write (one version bump, deterministic order) |
-| `get_body` | Jira + Confluence | returns the raw current body (Confluence storage + version / Jira ADF) for round-trip edits |
-| `set_body` | Jira + Confluence | replaces the whole body with your own content, placing images inline anywhere |
+| `embed_attachment` | **Jira** + Confluence | displays / links an already-uploaded attachment in a body or comment — append/prepend or at an anchor, with optional replace |
+| `embed_attachments` | **Jira** + Confluence | embeds several attachments into a body in one write (one version bump, deterministic order) |
+| `get_body` | **Jira** + Confluence | returns the raw current body (Jira ADF / Confluence storage + version) for round-trip edits |
+| `set_body` | **Jira** + Confluence | replaces the whole body with your own content, placing images inline anywhere |
+
+**Bold** = the product where the tool is the only correct option. The four body tools still accept Confluence, but the official MCP now round-trips Confluence bodies losslessly — see below.
+
+## What this does that the official MCP doesn't
+
+Verified against the live first-party Atlassian MCP in July 2026. Re-check before relying on it; Atlassian is shipping quickly.
+
+| Capability | Official MCP | Here |
+|---|---|---|
+| Move attachment bytes | no — Rovo v2 returns a curl command to run yourself | yes, in-process |
+| Bulk-download a whole issue/page | no | `download_all_attachments` |
+| Delete an attachment | no equivalent published | `delete_attachment` |
+| Show the model an image | no | `get_attachment_thumbnail`, or download + Read |
+| **Read a Jira description losslessly** | **no** — see below | `get_body` |
+| **Write a Jira description without destroying media** | **no** | `set_body`, `embed_attachment(s)` |
+| Read/write a Confluence body losslessly | **yes** — `contentFormat: "html"` | `get_body` / `set_body` (storage XML) |
+| Reference a Confluence attachment by filename | no — HTML+ needs a media UUID it never exposes | `embed_attachment` |
+
+### The Jira gap, concretely
+
+Ask the official server for ADF and it hands back markdown anyway. Same issue, same moment — `getJiraIssue(responseContentFormat: "adf")`:
+
+```
+![](blob:https://media.staging.atl-paas.net/?type=file&localId=null&id=114158ea-…&&collection=&height=480&…)
+```
+
+Alt text gone, `mediaSingle` attributes gone, `collection` empty, `localId` null. That is not ADF, and writing it back through `editJiraIssue` destroys the embed. `get_body` on the same issue:
+
+```json
+{ "type": "mediaSingle", "attrs": { "width": 561, "widthType": "pixel", "layout": "center" },
+  "content": [{ "type": "media", "attrs": { "type": "file", "id": "114158ea-…",
+    "alt": "Screenshot 2026-03-26 at 10.59.11 AM.png", "collection": "", "height": 480, "width": 1230 } }] }
+```
+
+This matches an [open report on Atlassian's developer community](https://community.developer.atlassian.com/t/rovo-mcp-server-no-attachment-upload-tool-and-description-drops-adf-media-nodes-on-edit/101278) (June 2026, unanswered).
+
+### The Confluence gap has closed
+
+`getConfluencePage(contentFormat: "html")` now returns fully-formed media nodes, and `updateConfluencePage` accepts them back — its own schema calls the format "round-trip safe":
+
+```html
+<figure data-type="media-single" data-layout="center" data-width="760" data-width-type="pixel">
+  <div data-type="media" data-media-type="file" data-id="0c5f9dfc-…"
+       data-collection="contentId-2206531585" data-width="974" data-height="846">screenshot.png</div>
+</figure>
+```
+
+For Confluence bodies, **prefer the official MCP**. It also places images at arbitrary inline positions, which `embed_attachment` can't. One asymmetry remains: HTML+ references media by UUID and forbids inventing one, and no first-party Confluence tool exposes the UUID of a file you just uploaded. This server's Confluence embeds reference `ri:filename` instead, so upload-then-embed still works here in one step.
 
 ### Embedding attachments
 
@@ -222,13 +270,13 @@ Uploading a file only stores it — it won't show up in the description or page 
   }
   ```
 
-This is the only way to interleave images with text where you want them — `embed_attachment` can't, and the official Atlassian MCP's page/description update strips images entirely.
+For **Jira** this is the only way to interleave images with text where you want them: `embed_attachment` only appends, prepends, or anchors, and `editJiraIssue` round-trips the description through markdown and drops the media nodes. For **Confluence**, `updateConfluencePage(contentFormat: "html")` does the same job — use `set_body` there when you want to author storage XML or reference an attachment by filename.
 
 **Prefer anchors over re-authoring a large page.** For a big page, don't read the whole body back just to add an image — `embed_attachment` with an `anchor` (or `embed_attachments`) inserts in place without ever fetching the full body, which also sidesteps the first-party page-read hitting an LLM's token limit. `set_body` also **refuses to replace a non-trivial body with one less than half its size** (pass `allowShrink: true` to override) — a guard against overwriting a page from a truncated or partial read.
 
-For a **surgical** edit rather than a full re-author, round-trip it: call `get_body` to read the current storage/ADF (it reports `length` so you can tell how big it is first), splice your change into that exact content, then `set_body` it back. `get_body` returns what the official Atlassian MCP won't — Confluence *storage* XML (its API only hands back markdown/HTML/ADF) and the raw Jira ADF.
+For a **surgical** edit rather than a full re-author, round-trip it: call `get_body` to read the current storage/ADF (it reports `length` so you can tell how big it is first), splice your change into that exact content, then `set_body` it back. On Jira this is the only lossless round-trip available — the official server's ADF read is markdown in disguise. On Confluence the official `getConfluencePage` / `updateConfluencePage` HTML round-trip is equally lossless; `get_body` is for when you specifically want storage XML.
 
-> **`set_body` is storage/ADF only — not markdown.** Confluence bodies must be storage XML and Jira bodies must be ADF. Don't pass markdown: the first-party markdown importer is lossy (it strips images and collapses nested lists), which is exactly what this tool exists to avoid.
+> **`set_body` is storage/ADF only — not markdown.** Confluence bodies must be storage XML and Jira bodies must be ADF. Don't route body edits through markdown anywhere: Atlassian's markdown conversion strips images and collapses nested lists, which is exactly the loss this tool exists to avoid. (The first-party server's *HTML* path for Confluence is lossless — it's specifically markdown that costs you content, and Jira's ADF read silently goes through it.)
 
 Jira's media nodes need the attachment's *media-services UUID*, which the upload/list APIs never expose. The server resolves it on the fly from the attachment content endpoint's redirect (`GET /rest/api/3/attachment/content/{id}` → `302` to `…/file/<UUID>/binary`). Confluence references attachments by filename, so no UUID is involved there.
 

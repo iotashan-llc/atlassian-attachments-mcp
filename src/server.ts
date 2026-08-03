@@ -83,14 +83,18 @@ const dedupeSchema = z
     '"replace" updates an existing embed of the same file in place instead of adding another copy (default "none")',
   );
 
-const INSTRUCTIONS = `This server manages Atlassian ATTACHMENTS (binaries) on Jira issues and Confluence pages. It complements the first-party Atlassian MCP: that one does issue/page text CRUD but CANNOT read attachment binaries or render a displayed image — this one can.
+const INSTRUCTIONS = `This server moves Atlassian ATTACHMENT BINARIES between local disk and Jira issues / Confluence pages, and writes Jira ADF bodies losslessly. It complements the first-party Atlassian MCP rather than replacing it.
+
+Division of labour (verified against the live first-party server, July 2026):
+- ATTACHMENT BINARIES -> this server. Upload/download move real bytes with no shell involved. The first-party and Rovo v2 servers are remote: at best they hand back a curl command for the client to run, so they need a shell, leak short-lived URLs into it, and never let the model see the file.
+- CONFLUENCE BODIES -> prefer the first-party MCP. Its getConfluencePage / updateConfluencePage with contentFormat:"html" round-trip losslessly, media nodes included, and can place an image anywhere. Reach for this server's Confluence get_body / set_body / embed_* only to reference a file by FILENAME — useful for a freshly uploaded attachment, whose media UUID no first-party Confluence tool exposes.
+- JIRA BODIES -> this server. The first-party getJiraIssue returns the description as markdown even when responseContentFormat:"adf" is asked for, degrading media nodes to blob: URLs with a null localId and empty collection; writing that back destroys the embed. get_body returns real ADF; embed_attachment / embed_attachments / set_body write real ADF.
 
 Recommended workflow when opening a ticket or page:
 - Fetch the issue/page CONTENT with the first-party Atlassian MCP AND the attachment list (list_attachments) or downloads (download_all_attachments) with THIS server in the SAME batch. The calls are independent — issue them together to save a round-trip. Screenshots attached to a ticket usually carry the real repro / acceptance detail, so pull them by default.
 - Downloads are written to a local sandbox and the path is returned (content is NOT inlined) — Read the saved path to view an image.
-- To DISPLAY an image inside a description/body/comment, use embed_attachment (this server). The first-party Atlassian MCP's page/description update cannot render displayed images.
-- To place an image INLINE next to specific content, prefer the surgical tools: embed_attachment with an anchor (afterHeading / replaceToken / afterBlock[Jira]) and dedupe, or embed_attachments to place several in one write. Reserve set_body (whole-body overwrite) for layouts the anchored ops can't express.
-- For a surgical edit you'd rather do by hand, round-trip: get_body (read raw storage/ADF) -> splice -> set_body. get_body returns Confluence storage XML and raw Jira ADF, which the first-party Atlassian MCP does not expose.`;
+- To DISPLAY an image in a Jira description or comment, use embed_attachment with an anchor (afterHeading / replaceToken / afterBlock) and dedupe, or embed_attachments to place several in one write. Reserve set_body (whole-body overwrite) for layouts the anchored ops can't express.
+- For a surgical Jira edit, round-trip: get_body (raw ADF) -> splice -> set_body.`;
 
 export function createServer(context: ServerContext): McpServer {
   const { jira, confluence, sandbox, siteHost } = context;
@@ -363,18 +367,6 @@ export function createServer(context: ServerContext): McpServer {
   );
 
   server.registerTool(
-    "peek_archive_attachment",
-    {
-      title: "Peek inside archive attachment",
-      description:
-        "List the contents of a zip/archive attachment without downloading it. Jira only.",
-      inputSchema: { attachmentId },
-    },
-    (args) =>
-      run(async () => JSON.stringify(await jira.peek(args.attachmentId), null, 2)),
-  );
-
-  server.registerTool(
     "get_attachment_thumbnail",
     {
       title: "Get attachment thumbnail",
@@ -408,24 +400,14 @@ export function createServer(context: ServerContext): McpServer {
   );
 
   server.registerTool(
-    "get_attachment_limits",
-    {
-      title: "Get attachment limits",
-      description:
-        "Report whether attachments are enabled on the Jira site and the maximum upload size in bytes. Jira only.",
-      inputSchema: {},
-    },
-    () => run(async () => JSON.stringify(await jira.limits())),
-  );
-
-  server.registerTool(
     "embed_attachment",
     {
       title: "Embed or link an attachment",
       description:
         "Insert an already-uploaded attachment into a Jira issue (description or a new comment) or a Confluence page (body or a new footer comment). " +
         'as="image" (default) = a displayed image; as="link" = a clickable download link / file card (any file type, e.g. PDF/zip); as="inline" = an inline file chip within a line (Jira only, any file type). ' +
-        "This is the way to show an image or reference a file — the first-party Atlassian MCP's page/description update cannot do either. " +
+        "For JIRA this is the way to show an image: the first-party MCP reads descriptions back as markdown, so a write through it destroys existing media nodes. " +
+        "For CONFLUENCE the first-party updateConfluencePage (contentFormat:\"html\") can also place media and allows arbitrary inline positions — prefer it unless you need to reference a file by FILENAME, which is what this tool does and what a freshly uploaded attachment needs (no first-party Confluence tool exposes its media UUID). " +
         "Upload the file first with upload_attachment on the same container, then call this. " +
         "Identify the attachment by attachmentId (preferred) or exact filename. " +
         'target="body" = Jira description / Confluence page body; target="comment" = a new comment. ' +
@@ -549,7 +531,8 @@ export function createServer(context: ServerContext): McpServer {
       title: "Embed multiple attachments",
       description:
         "Embed several already-uploaded attachments into a Jira issue description or Confluence page body in ONE read-modify-write — applied in list order, in a single version bump (embedding N images one-by-one otherwise churns the page through N versions with reorder races). " +
-        "Each item is like an embed_attachment call minus target: identify by attachmentId or filename, choose as (image/link/inline), and place with position (append/prepend) or anchor (afterHeading / afterBlock [Jira] / replaceToken), optionally dedupe:\"replace\". Body only. Upload the files first with upload_attachment.",
+        "Each item is like an embed_attachment call minus target: identify by attachmentId or filename, choose as (image/link/inline), and place with position (append/prepend) or anchor (afterHeading / afterBlock [Jira] / replaceToken), optionally dedupe:\"replace\". Body only. Upload the files first with upload_attachment. " +
+        "Same product split as embed_attachment: essential for Jira, optional for Confluence (the first-party HTML round-trip can batch too — use this when referencing files by filename).",
       inputSchema: {
         product,
         container,
@@ -615,7 +598,9 @@ export function createServer(context: ServerContext): McpServer {
       title: "Get body",
       description:
         "Return the raw current body of a Jira issue (description) or Confluence page — the read half of a get_body → edit → set_body round-trip for surgical inserts without re-authoring the whole page. " +
-        "Confluence returns v2 storage XML plus the current version number; Jira returns the description as a v3 ADF document (null when empty). This is the storage/ADF the first-party Atlassian MCP won't give you.",
+        "Confluence returns v2 storage XML plus the current version number; Jira returns the description as a v3 ADF document (null when empty). " +
+        "For JIRA this is the only lossless read: the first-party getJiraIssue returns markdown even when responseContentFormat:\"adf\" is requested, collapsing media nodes to blob: URLs. " +
+        "For CONFLUENCE the first-party getConfluencePage (contentFormat:\"html\") is already lossless and round-trip safe — use this only when you specifically want storage XML.",
       inputSchema: { product, container },
     },
     (args) =>
@@ -655,7 +640,9 @@ export function createServer(context: ServerContext): McpServer {
     {
       title: "Set body",
       description:
-        "Replace the ENTIRE body of a Jira issue (description) or Confluence page with caller-authored content. This is the way to place images INLINE ANYWHERE — next to a step, mid-paragraph — which embed_attachment (append/prepend only) and the first-party Atlassian MCP (strips images) cannot do. " +
+        "Replace the ENTIRE body of a Jira issue (description) or Confluence page with caller-authored content — the way to place images INLINE ANYWHERE (next to a step, mid-paragraph) rather than only appending. " +
+        "For JIRA this is the only safe whole-body write: the first-party editJiraIssue round-trips descriptions through markdown and drops existing media nodes. " +
+        "For CONFLUENCE the first-party updateConfluencePage (contentFormat:\"html\") does the same job losslessly — prefer it unless you want to author storage XML or reference an attachment by filename. " +
         "You author the whole body and it OVERWRITES existing content, so include everything you want to keep. Upload any attachments first with upload_attachment.\n" +
         'Confluence: body is v2 STORAGE-format XML. Reference an uploaded attachment inline with <ac:image><ri:attachment ri:filename="diagram.png" /></ac:image> (or <ac:link> for a download link).\n' +
         'Jira: body is an ADF document as a JSON string (an object with type "doc"). Reference an uploaded attachment inside a media / mediaInline node by putting its filename or attachmentId in attrs.id — the server resolves it to the media UUID.',

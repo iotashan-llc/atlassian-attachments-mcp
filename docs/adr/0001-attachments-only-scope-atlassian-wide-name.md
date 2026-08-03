@@ -1,5 +1,7 @@
 # Attachments-only scope, Atlassian-wide name
 
+> **Partly superseded by [ADR 0005](0005-scope-narrowed-to-bytes-and-jira-adf.md) (July 2026).** The "cannot touch attachments at all" premise below was true when written; Rovo MCP v2 preview has since added attachment operations, though they hand the client a curl command rather than moving bytes. The scope test has been re-drawn from "needs local file I/O" to "would the first-party path lose data or require a shell."
+
 The official Atlassian MCP server is remote and therefore cannot touch attachments at all (no local filesystem access). This project fills exactly that gap and nothing else: attachment operations for Jira issues **and** Confluence pages, running locally via `npx atlassian-attachments-mcp`. Local file I/O is the differentiator; any capability that doesn't need it is out of scope — even ones genuinely missing from the official MCP.
 
 ## Considered Options
