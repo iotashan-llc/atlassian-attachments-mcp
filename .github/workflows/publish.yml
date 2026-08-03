@@ -13,11 +13,16 @@ jobs:
       contents: read
       id-token: write # OIDC trusted publishing + provenance
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          # Build/publish runtime only — the package itself still supports Node >= 20
+          # (see "engines"). npm 12 dropped Node 20, so this must stay >= 22.
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@latest # staged publishing needs npm >= 11.15
+      # Pinned to a major, NOT @latest: staged publishing needs npm >= 11.15, but
+      # `npm@latest` silently followed npm into a major that dropped this runner's
+      # Node and broke the v1.2.1 publish. Bump this deliberately, with node-version.
+      - run: npm install -g npm@12
       - run: npm ci
       - run: npm stage publish # OIDC auth, no token; stages for maintainer approval
